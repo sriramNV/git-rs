@@ -21,6 +21,15 @@ Update `progress-tracker.md` after every completed feature and `module-registry.
 
 If implementation must deviate from what `progress-tracker.md` / `build-plan.md` document, record the deviation in `context/decisions.md` at the time it happens — never silently. Locked choices are marked bold in the tracker.
 
+## Git usage — never confuse the two
+
+This project's own repository is managed with **real git** (`git init`, `git add`, `git commit`). Our reimplementation is named **`git-rs`** and is built with `cargo` — it is never used to manage this repository, and its binary is never named `git`.
+
+- Commit once per completed step (one commit per progress-tracker step), with a message in the form `step NN: <short title>` (e.g. `step 01: project scaffold`)
+- Keep the repository in a clean, committable state at the end of every session
+- Never use `git-rs` on this repository or any other real repository — it is a learning implementation, not a replacement
+- If a commit needs amending or history rewriting, confirm with the user first
+
 ## Skills
 
 Skills live in `skills/`:
