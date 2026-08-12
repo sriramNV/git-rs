@@ -34,7 +34,9 @@ pub fn run_add(args: &[String]) -> Result<()> {
         }
     }
     if paths.is_empty() {
-        return Err(GitError::Invalid("usage: git-rs add <pathspec>...".into()));
+        return Err(GitError::Invalid(
+            "Nothing specified, nothing added.".into(),
+        ));
     }
 
     let refs = Refs::discover()?;

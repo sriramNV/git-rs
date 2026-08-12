@@ -276,24 +276,29 @@ fn exact_rename_detected_between_head_and_index() {
 fn symlink_tracked_and_shown() {
     let f = Fixture::new();
     f.seed_commit(&[("real.txt", "target\n")]);
-    // Symlinks need developer mode/admin; skip quietly when unavailable.
-    if std::os::windows::fs::symlink_file("real.txt", f.dir.join("link.txt")).is_err() {
-        cleanup(f);
-        return;
+    // Symlinks need developer mode/admin; on Windows without privilege,
+    // fs::symlink_file fails. Create a regular copy as fallback so the
+    // test still exercises the add/status code path. If symlink works,
+    // verify it shows as 120000 in ls-files.
+    let created = std::os::windows::fs::symlink_file("real.txt", f.dir.join("link.txt")).is_ok();
+    if !created {
+        fs::copy(f.dir.join("real.txt"), f.dir.join("link.txt")).unwrap();
     }
     f.assert_same(&["status", "--short"]);
     let (rc, _, err) = f.our(&["add", "link.txt"]);
     assert!(
         rc == 0,
-        "add symlink failed: {}",
+        "add link failed: {}",
         String::from_utf8_lossy(&err)
     );
     let (_, ls, _) = f.real(&["ls-files", "--stage"]);
-    assert!(
-        String::from_utf8_lossy(&ls).contains("120000"),
-        "symlink staged as 120000, got: {}",
-        String::from_utf8_lossy(&ls)
-    );
+    if created {
+        assert!(
+            String::from_utf8_lossy(&ls).contains("120000"),
+            "symlink staged as 120000, got: {}",
+            String::from_utf8_lossy(&ls)
+        );
+    }
     f.assert_same(&["status", "--short"]);
     cleanup(f);
 }
