@@ -170,20 +170,30 @@ fn print_tree(content: &[u8]) -> Result<()> {
 /// Create or update a ref, atomically. With `<old>`, the update only
 /// happens if the ref currently points at `<old>` (compare-and-swap).
 /// Writes a reflog entry when `core.logallrefupdates` is enabled.
+///
+/// Real git lowercases object names; malformed shas get the classic
+/// `not a valid [old] SHA1` fatal (exit 128) — probe-verified against
+/// git 2.55.
 pub fn run_update_ref(args: &[String]) -> Result<()> {
-    let mut message = String::new();
+    let mut message: Option<String> = None;
     let mut positional: Vec<&String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-m" => {
                 i += 1;
-                message = args
+                let reason = args
                     .get(i)
                     .ok_or_else(|| {
                         GitError::Invalid("update-ref: option '-m' requires a reason".into())
                     })?
                     .clone();
+                if reason.is_empty() {
+                    return Err(GitError::Invalid(
+                        "usage: git-rs update-ref [-m <reason>] <ref> <new> [<old>]".into(),
+                    ));
+                }
+                message = Some(reason);
             }
             s if s.starts_with('-') => {
                 return Err(GitError::Invalid(format!(
@@ -204,8 +214,19 @@ pub fn run_update_ref(args: &[String]) -> Result<()> {
     };
     let old = positional.get(2).map(|s| s.as_str());
 
+    let new_sha = new_sha.to_ascii_lowercase();
+    if !is_40_hex(&new_sha) {
+        return Err(GitError::Fatal(format!("{new_sha}: not a valid SHA1")));
+    }
+    let old = old.map(str::to_ascii_lowercase);
+    if let Some(old) = &old
+        && !is_40_hex(old)
+    {
+        return Err(GitError::Fatal(format!("{old}: not a valid old SHA1")));
+    }
+
     let refs = Refs::discover()?;
-    if let Some(old) = old {
+    if let Some(old) = &old {
         let current = refs.resolve(name)?;
         // git semantics: old == ZERO_SHA means "must not exist" (create-only).
         if old == crate::refs::ZERO_SHA {
@@ -216,7 +237,7 @@ pub fn run_update_ref(args: &[String]) -> Result<()> {
             }
         } else {
             match current {
-                Some(actual) if actual == old => {}
+                Some(actual) if actual == *old => {}
                 Some(actual) => {
                     return Err(GitError::Fatal(format!(
                         "update_ref failed for ref '{name}': cannot lock ref '{name}': is at {actual} but expected {old}"
@@ -230,5 +251,10 @@ pub fn run_update_ref(args: &[String]) -> Result<()> {
             }
         }
     }
-    refs.update(name, new_sha, &message)
+    refs.update(name, &new_sha, message.as_deref().unwrap_or(""))
+}
+
+/// A 40-hex sha, case-insensitive (git lowercases object names).
+fn is_40_hex(s: &str) -> bool {
+    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
 }

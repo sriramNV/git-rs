@@ -280,6 +280,51 @@ fn update_ref_cas_and_errors_match_real_git() {
     let our_msg = String::from_utf8_lossy(&ours.stderr);
     assert_eq!(our_msg.trim(), real_msg.trim());
 
+    // Malformed new sha: "zz: not a valid SHA1".
+    let real = Command::new("git")
+        .args(["update-ref", "refs/heads/bad", "zz"])
+        .current_dir(&f.dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    let ours = f.bin(&["update-ref", "refs/heads/bad", "zz"]);
+    assert_eq!(ours.status.code(), real.status.code());
+    let real_msg = String::from_utf8_lossy(&real.stderr);
+    let our_msg = String::from_utf8_lossy(&ours.stderr);
+    assert_eq!(our_msg.trim(), real_msg.trim());
+
+    // Malformed old sha: "zz: not a valid old SHA1".
+    let real = Command::new("git")
+        .args(["update-ref", "refs/heads/feature", &commit, "zz"])
+        .current_dir(&f.dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    let ours = f.bin(&["update-ref", "refs/heads/feature", &commit, "zz"]);
+    assert_eq!(ours.status.code(), real.status.code());
+    let real_msg = String::from_utf8_lossy(&real.stderr);
+    let our_msg = String::from_utf8_lossy(&ours.stderr);
+    assert_eq!(our_msg.trim(), real_msg.trim());
+
+    // Uppercase sha is lowercased by both; ref file ends up identical.
+    let upper = commit.to_uppercase();
+    let real = Command::new("git")
+        .args(["update-ref", "refs/heads/up", &upper])
+        .current_dir(&f.dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(real.status.success());
+    let ours = f.bin(&["update-ref", "refs/heads/up2", &upper]);
+    assert!(
+        ours.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ours.stderr)
+    );
+    let real_ref = fs::read_to_string(f.dir.join(".git/refs/heads/up")).unwrap();
+    let our_ref = fs::read_to_string(f.dir.join(".git/refs/heads/up2")).unwrap();
+    assert_eq!(our_ref, real_ref);
+
     cleanup(f);
 }
 
@@ -305,6 +350,45 @@ fn packed_refs_loose_wins_matches_real_git() {
     assert_eq!(f.real(&["rev-parse", "refs/heads/packed"]).trim(), commit);
     // Still-packed ref keeps resolving through packed-refs.
     assert_eq!(f.real(&["rev-parse", "refs/heads/stays"]).trim(), commit);
+    cleanup(f);
+}
+
+#[test]
+fn update_ref_uses_global_config_identity() {
+    let f = Fixture::new();
+    let commit = commit_from_scratch(&f.store());
+    // Isolate HOME so our global gitconfig is the only one seen.
+    let home = scratch_dir("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join(".gitconfig"),
+        "[user]\n\tname = Global User\n\temail = global@example.com\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_git-rs"))
+        .args([
+            "update-ref",
+            "-m",
+            "global ident",
+            "refs/heads/glob",
+            &commit,
+        ])
+        .current_dir(&f.dir)
+        .env("HOME", &home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = fs::read_to_string(f.dir.join(".git/logs/refs/heads/glob")).unwrap();
+    assert!(
+        log.contains("Global User <global@example.com>"),
+        "log: {log}"
+    );
+    let _ = fs::remove_dir_all(&home);
     cleanup(f);
 }
 

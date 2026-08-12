@@ -204,7 +204,9 @@ impl Refs {
 
         Self::validate_name(name)
             .map_err(|_| fail(format!("refusing to update ref with bad name '{name}'")))?;
-        if !is_sha(new_sha) || new_sha.chars().any(|c| c.is_ascii_uppercase()) {
+        // git lowercases object names on input; store lowercase always.
+        let new_sha = new_sha.to_ascii_lowercase();
+        if !is_sha(&new_sha) {
             // git: "trying to write ref '<name>' with nonexistent object
             // <new>"; exit 128 for any bad object name.
             return Err(fail(format!(
@@ -219,7 +221,7 @@ impl Refs {
 
         let target = self.writable_target(name)?;
         let store = crate::store::ObjectStore::new(self.git_dir.join("objects"));
-        if !store.object_path(new_sha).exists() {
+        if !store.object_path(&new_sha).exists() {
             // ponytail: loose-only lookup; pack lookup when packs land.
             return Err(fail(format!(
                 "trying to write ref '{name}' with nonexistent object {new_sha}"
@@ -239,7 +241,7 @@ impl Refs {
         file.sync_all().context(&tmp, "fsync temp ref")?;
         fs::rename(&tmp, &target).context(&target, "commit ref update")?;
 
-        self.append_reflog(name, &old_sha, new_sha, message)?;
+        self.append_reflog(name, &old_sha, &new_sha, message)?;
         Ok(())
     }
 
@@ -261,7 +263,10 @@ impl Refs {
 
     /// Append `<old> <new> <ident> <ts> <tz>[tab]<msg>` to `logs/<name>`.
     fn append_reflog(&self, name: &str, old: &str, new: &str, message: &str) -> Result<()> {
-        let cfg = Config::load_with(&self.git_dir, None)
+        // Repo layer from this git dir; global layer resolved like
+        // Config::load so identity from ~/.gitconfig works (review fix).
+        let global = crate::config::global_config_path();
+        let cfg = Config::load_with(&self.git_dir, global.as_deref())
             .map_err(|e| GitError::Fatal(format!("update_ref failed for ref '{name}': {e}")))?;
         if !cfg.get_bool("core", "logallrefupdates").unwrap_or(true) {
             return Ok(());
@@ -271,7 +276,8 @@ impl Refs {
                 "update_ref failed for ref '{name}': no user identity configured"
             )));
         };
-        let (ts, tz) = now_with_tz();
+        let (ts, tz) = now_with_tz()
+            .map_err(|e| GitError::Fatal(format!("update_ref failed for ref '{name}': {e}")))?;
         let dir = self.git_dir.join("logs").join(name);
         let dir = dir.parent().unwrap_or(&self.git_dir).to_path_buf();
         fs::create_dir_all(&dir).context(&dir, "create reflog directory")?;
@@ -308,19 +314,22 @@ fn is_sha(s: &str) -> bool {
 }
 
 /// Unix seconds now, tz from `GIT_COMMITTER_DATE` (`<ts> <tz>`) if set,
-/// else UTC.
-fn now_with_tz() -> (i64, String) {
-    if let Ok(date) = env::var("GIT_COMMITTER_DATE")
-        && let Some((ts, tz)) = date.split_once(' ')
-        && let Ok(ts) = ts.trim().parse::<i64>()
-    {
-        return (ts, tz.trim().to_string());
+/// else UTC. Real git refuses an unparseable date with
+/// `invalid date format: <value>` (exit 128) — same here.
+fn now_with_tz() -> Result<(i64, String)> {
+    if let Ok(date) = env::var("GIT_COMMITTER_DATE") {
+        if let Some((ts, tz)) = date.split_once(' ')
+            && let Ok(ts) = ts.trim().parse::<i64>()
+        {
+            return Ok((ts, tz.trim().to_string()));
+        }
+        return Err(GitError::Fatal(format!("invalid date format: {date}")));
     }
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    (ts, "+0000".to_string()) // ponytail: local tz needs chrono/unsafe, banned
+    Ok((ts, "+0000".to_string())) // ponytail: local tz needs chrono/unsafe, banned
 }
 
 #[cfg(test)]
@@ -330,6 +339,13 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Serializes tests that mutate `GIT_COMMITTER_*` env vars (parallel
+    /// threads share the process env).
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
 
     fn temp_git_dir() -> PathBuf {
         let dir = env::temp_dir().join(format!(
@@ -431,6 +447,7 @@ mod tests {
 
     #[test]
     fn update_is_atomic_and_writes_reflog() {
+        let _guard = env_lock();
         let dir = temp_git_dir();
         let store = crate::store::ObjectStore::new(dir.join("objects"));
         let id = store.write_blob(b"ref test").unwrap();
@@ -470,6 +487,40 @@ mod tests {
             refs.update("refs/heads/x", "ZZ", "").unwrap_err(),
             GitError::Fatal(_)
         ));
+    }
+
+    #[test]
+    fn update_lowercases_uppercase_shas() {
+        let dir = temp_git_dir();
+        let store = crate::store::ObjectStore::new(dir.join("objects"));
+        let id = store.write_blob(b"case").unwrap();
+        let refs = Refs::new(&dir);
+        refs.update("refs/heads/up", &id.to_uppercase(), "m")
+            .unwrap();
+        let content = fs::read_to_string(dir.join("refs/heads/up")).unwrap();
+        assert_eq!(content.trim(), id);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn garbage_committer_date_is_fatal() {
+        let _guard = env_lock();
+        let dir = temp_git_dir();
+        let store = crate::store::ObjectStore::new(dir.join("objects"));
+        let id = store.write_blob(b"d").unwrap();
+        let refs = Refs::new(&dir);
+        let prev = env::var("GIT_COMMITTER_DATE").ok();
+        unsafe { env::set_var("GIT_COMMITTER_DATE", "garbage") };
+        let err = refs.update("refs/heads/d", &id, "").unwrap_err();
+        assert!(
+            matches!(&err, GitError::Fatal(msg) if msg.contains("invalid date format: garbage")),
+            "got {err:?}"
+        );
+        match prev {
+            Some(v) => unsafe { env::set_var("GIT_COMMITTER_DATE", v) },
+            None => unsafe { env::remove_var("GIT_COMMITTER_DATE") },
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -127,7 +127,7 @@ impl Config {
 }
 
 /// Resolve the global config file path, if any.
-fn global_config_path() -> Option<PathBuf> {
+pub(crate) fn global_config_path() -> Option<PathBuf> {
     if let Ok(path) = env::var("GIT_CONFIG_GLOBAL") {
         return Some(PathBuf::from(path));
     }
