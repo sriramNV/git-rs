@@ -14,12 +14,29 @@ use crate::store::{Kind, ObjectStore};
 /// Compute the blob object id for a file (or stdin with `--stdin`).
 /// With `-w`, write the object into the store first.
 pub fn run_hash_object(args: &[String]) -> Result<()> {
-    let write = args.iter().any(|a| a == "-w");
-    let from_stdin = args.iter().any(|a| a == "--stdin");
-    let files: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    let mut write = false;
+    let mut from_stdin = false;
+    let mut files: Vec<&String> = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "-w" => write = true,
+            "--stdin" => from_stdin = true,
+            s if s.starts_with('-') => {
+                return Err(GitError::Invalid(format!(
+                    "hash-object: unknown option '{arg}'"
+                )))
+            }
+            _ => files.push(arg),
+        }
+    }
     if from_stdin && !files.is_empty() {
         return Err(GitError::Invalid(
             "hash-object: --stdin cannot be combined with file arguments".into(),
+        ));
+    }
+    if files.len() > 1 {
+        return Err(GitError::Invalid(
+            "hash-object: multiple files not implemented in v1".into(),
         ));
     }
 

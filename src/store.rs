@@ -124,7 +124,9 @@ impl ObjectStore {
             .context(&path, "encode object content")?;
         let compressed = encoder.finish().context(&path, "finish zlib stream")?;
 
-        let dir = path.parent().expect("object path always has a parent");
+        let dir = path
+            .parent()
+            .ok_or_else(|| GitError::Invalid(format!("object path {id} has no parent")))?;
         fs::create_dir_all(dir).context(dir, "create object directory")?;
         let tmp = dir.join(format!(".tmp-{}", std::process::id()));
         fs::write(&tmp, &compressed).context(&tmp, "write object")?;
@@ -147,8 +149,11 @@ impl ObjectStore {
         let path = self.object_path(id);
         let compressed = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(GitError::NotFound(format!("Not a valid object name {id}")));
+            }
+            Err(e) => {
+                return Err(GitError::io(path.display().to_string(), "read object", e))
             }
         };
 
