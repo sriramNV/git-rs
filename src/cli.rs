@@ -3,6 +3,7 @@
 //! No `clap`, no derive macros: a static command table plus explicit
 //! argument handling keeps behavior predictable and dependency-free.
 
+use crate::commands::hash_object::{run_cat_file, run_hash_object};
 use crate::error::{GitError, Result};
 
 /// A registered subcommand.
@@ -18,12 +19,26 @@ pub struct Command {
 }
 
 /// Command table. Commands are registered here as they are implemented.
-pub static COMMANDS: &[Command] = &[Command {
-    name: "help",
-    usage: "git-rs help [<command>]",
-    help: "show help for git-rs or a specific command",
-    run: run_help,
-}];
+pub static COMMANDS: &[Command] = &[
+    Command {
+        name: "help",
+        usage: "git-rs help [<command>]",
+        help: "show help for git-rs or a specific command",
+        run: run_help,
+    },
+    Command {
+        name: "hash-object",
+        usage: "git-rs hash-object [-w] [--stdin] <file>",
+        help: "compute the object id for a file, optionally writing it",
+        run: run_hash_object,
+    },
+    Command {
+        name: "cat-file",
+        usage: "git-rs cat-file (-t | -s | -p) <object>",
+        help: "print the type, size, or content of an object",
+        run: run_cat_file,
+    },
+];
 
 /// Dispatch raw arguments (without the program name) to a command.
 pub fn dispatch(args: &[String]) -> Result<()> {

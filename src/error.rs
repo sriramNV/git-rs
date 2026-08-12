@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::io;
+use std::path::Path;
 
 /// Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, GitError>;
@@ -67,11 +68,13 @@ impl From<io::Error> for GitError {
 /// Extension trait adding `.context(path, op)` to `io::Result`.
 pub trait IoContext<T> {
     /// Attach the path and operation to an I/O error.
-    fn context(self, path: impl Into<String>, op: impl Into<String>) -> Result<T>;
+    fn context<P: AsRef<Path>, O: AsRef<str>>(self, path: P, op: O) -> Result<T>;
 }
 
 impl<T> IoContext<T> for std::result::Result<T, io::Error> {
-    fn context(self, path: impl Into<String>, op: impl Into<String>) -> Result<T> {
-        self.map_err(|source| GitError::io(path, op, source))
+    fn context<P: AsRef<Path>, O: AsRef<str>>(self, path: P, op: O) -> Result<T> {
+        self.map_err(|source| {
+            GitError::io(path.as_ref().display().to_string(), op.as_ref().to_string(), source)
+        })
     }
 }
