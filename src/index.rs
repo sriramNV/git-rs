@@ -190,7 +190,7 @@ impl Index {
         &self.entries
     }
 
-    pub fn entries_mut(&mut self) -> &mut [IndexEntry] {
+    pub fn entries_mut(&mut self) -> &mut Vec<IndexEntry> {
         &mut self.entries
     }
 

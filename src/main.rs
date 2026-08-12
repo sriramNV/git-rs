@@ -10,7 +10,12 @@ fn main() -> ExitCode {
     match cli::dispatch(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("fatal: {err}");
+            match &err {
+                // Invalid errors print bare — real git omits the fatal:
+                // prefix for these (e.g. ignored-paths add error, probed).
+                GitError::Invalid(_) => eprintln!("{err}"),
+                _ => eprintln!("fatal: {err}"),
+            }
             ExitCode::from(exit_code(&err))
         }
     }

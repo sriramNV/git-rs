@@ -31,6 +31,11 @@ impl Refs {
         }
     }
 
+    /// The git directory this refs instance is anchored at.
+    pub fn git_dir(&self) -> &std::path::Path {
+        &self.git_dir
+    }
+
     /// Resolve the git dir: `GIT_DIR` env, else `<cwd>/.git`.
     /// ponytail: no upward walk in v1, same rule as ObjectStore (D-002).
     pub fn discover() -> Result<Self> {
@@ -491,6 +496,7 @@ mod tests {
 
     #[test]
     fn update_lowercases_uppercase_shas() {
+        let _guard = env_lock();
         let dir = temp_git_dir();
         let store = crate::store::ObjectStore::new(dir.join("objects"));
         let id = store.write_blob(b"case").unwrap();
