@@ -9,9 +9,9 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use sha1::{Digest, Sha1};
 
 use crate::error::{GitError, IoContext, Result};
@@ -87,7 +87,10 @@ impl ObjectStore {
         hasher.update(b"\0");
         hasher.update(content);
         let digest = hasher.finalize();
-        digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     }
 
     /// The on-disk path for an object id: `objects/<2>/<38>`.
@@ -114,11 +117,15 @@ impl ObjectStore {
         encoder
             .write_all(kind.as_str().as_bytes())
             .context(&path, "encode object header")?;
-        encoder.write_all(b" ").context(&path, "encode object header")?;
+        encoder
+            .write_all(b" ")
+            .context(&path, "encode object header")?;
         encoder
             .write_all(format!("{}", content.len()).as_bytes())
             .context(&path, "encode object header")?;
-        encoder.write_all(b"\0").context(&path, "encode object header")?;
+        encoder
+            .write_all(b"\0")
+            .context(&path, "encode object header")?;
         encoder
             .write_all(content)
             .context(&path, "encode object content")?;
@@ -139,7 +146,8 @@ impl ObjectStore {
     /// Returns `(kind, content)` where content is exactly the object body
     /// (header stripped). Any format or integrity violation is `Corrupt`.
     pub fn read_object(&self, id: &str) -> Result<(Kind, Vec<u8>)> {
-        if !is_valid_id(id) || !id.chars().all(|c| c.is_ascii_hexdigit())
+        if !is_valid_id(id)
+            || !id.chars().all(|c| c.is_ascii_hexdigit())
             || id.chars().any(|c| c.is_ascii_uppercase())
         {
             // Message matches real git's fatal for a bad object name;
@@ -152,9 +160,7 @@ impl ObjectStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(GitError::NotFound(format!("Not a valid object name {id}")));
             }
-            Err(e) => {
-                return Err(GitError::io(path.display().to_string(), "read object", e))
-            }
+            Err(e) => return Err(GitError::io(path.display().to_string(), "read object", e)),
         };
 
         let mut decoder = ZlibDecoder::new(&compressed[..]);
@@ -236,10 +242,7 @@ mod tests {
     fn write_then_read_roundtrips() {
         let store = temp_store();
         let id = store.write_blob(b"the quick brown fox").unwrap();
-        assert_eq!(
-            id,
-            ObjectStore::hash(Kind::Blob, b"the quick brown fox")
-        );
+        assert_eq!(id, ObjectStore::hash(Kind::Blob, b"the quick brown fox"));
         let (kind, content) = store.read_object(&id).unwrap();
         assert_eq!(kind, Kind::Blob);
         assert_eq!(content, b"the quick brown fox");
@@ -277,10 +280,7 @@ mod tests {
         encoder.write_all(b"blob 9\0integrity!").unwrap();
         let bytes = encoder.finish().unwrap();
         fs::write(&path, &bytes).unwrap();
-        assert!(matches!(
-            store.read_object(&id),
-            Err(GitError::Corrupt(_))
-        ));
+        assert!(matches!(store.read_object(&id), Err(GitError::Corrupt(_))));
         let _ = fs::remove_dir_all(store.root);
     }
 
@@ -291,10 +291,7 @@ mod tests {
         let path = store.object_path(&id);
         let bytes = fs::read(&path).unwrap();
         fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
-        assert!(matches!(
-            store.read_object(&id),
-            Err(GitError::Corrupt(_))
-        ));
+        assert!(matches!(store.read_object(&id), Err(GitError::Corrupt(_))));
         let _ = fs::remove_dir_all(store.root);
     }
 

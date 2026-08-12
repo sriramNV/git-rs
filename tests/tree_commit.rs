@@ -124,7 +124,7 @@ fn raw_oid(hex: &str) -> [u8; 20] {
 fn blobs(fixture: &Fixture, contents: &[(&str, &str)]) -> Vec<String> {
     contents
         .iter()
-.map(|(name, content)| {
+        .map(|(name, content)| {
             let mut out = Command::new("git")
                 .args(["hash-object", "-w", "--stdin"])
                 .current_dir(&fixture.dir)
@@ -134,7 +134,11 @@ fn blobs(fixture: &Fixture, contents: &[(&str, &str)]) -> Vec<String> {
                 .spawn()
                 .unwrap();
             use std::io::Write;
-            out.stdin.take().unwrap().write_all(content.as_bytes()).unwrap();
+            out.stdin
+                .take()
+                .unwrap()
+                .write_all(content.as_bytes())
+                .unwrap();
             let out = out.wait_with_output().unwrap();
             assert!(out.status.success(), "hash-object failed");
             let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -147,7 +151,10 @@ fn blobs(fixture: &Fixture, contents: &[(&str, &str)]) -> Vec<String> {
 #[test]
 fn tree_sha_matches_git_mktree() {
     let fixture = Fixture::new();
-    let ids = blobs(&fixture, &[("a.txt", "hello\n"), ("run.sh", "#!/bin/sh\necho hi\n")]);
+    let ids = blobs(
+        &fixture,
+        &[("a.txt", "hello\n"), ("run.sh", "#!/bin/sh\necho hi\n")],
+    );
 
     // Real git mktree with the same entries.
     let mktree_input = format!(
@@ -157,10 +164,20 @@ fn tree_sha_matches_git_mktree() {
     let real_sha = fixture.git_stdin(&["mktree"], &mktree_input);
 
     // Our tree: same entries (unsorted; serialize must sort them).
-    let our_bytes = Tree { entries: vec![
-        TreeEntry { mode: 0o100755, name: b"run.sh".to_vec(), oid: raw_oid(&ids[1]) },
-        TreeEntry { mode: 0o100644, name: b"a.txt".to_vec(), oid: raw_oid(&ids[0]) },
-    ] }
+    let our_bytes = Tree {
+        entries: vec![
+            TreeEntry {
+                mode: 0o100755,
+                name: b"run.sh".to_vec(),
+                oid: raw_oid(&ids[1]),
+            },
+            TreeEntry {
+                mode: 0o100644,
+                name: b"a.txt".to_vec(),
+                oid: raw_oid(&ids[0]),
+            },
+        ],
+    }
     .serialize()
     .unwrap();
     let our_sha = ObjectStore::hash(Kind::Tree, &our_bytes);
@@ -168,7 +185,10 @@ fn tree_sha_matches_git_mktree() {
 
     // Write our tree into the store; git fsck must accept it, and parsing
     // the real git tree back must round-trip byte-identically.
-    fixture.store().write_object(Kind::Tree, &our_bytes).unwrap();
+    fixture
+        .store()
+        .write_object(Kind::Tree, &our_bytes)
+        .unwrap();
     fixture.fsck_clean();
     let (kind, content) = fixture.store().read_object(&real_sha).unwrap();
     assert_eq!(kind, Kind::Tree);
@@ -186,8 +206,16 @@ fn nested_tree_matches_git_mktree() {
     let sub_sha = fixture.git_stdin(&["mktree"], &sub_input);
 
     let mut entries = vec![
-        TreeEntry { mode: 0o040000, name: b"sub".to_vec(), oid: raw_oid(&sub_sha) },
-        TreeEntry { mode: 0o100644, name: b"top.txt".to_vec(), oid: raw_oid(&ids[0]) },
+        TreeEntry {
+            mode: 0o040000,
+            name: b"sub".to_vec(),
+            oid: raw_oid(&sub_sha),
+        },
+        TreeEntry {
+            mode: 0o100644,
+            name: b"top.txt".to_vec(),
+            oid: raw_oid(&ids[0]),
+        },
     ];
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     let root_input = format!(
@@ -199,7 +227,10 @@ fn nested_tree_matches_git_mktree() {
     assert_eq!(ObjectStore::hash(Kind::Tree, &our_bytes), real_sha);
 
     // Round-trip: parse the real git tree, entries are already sorted.
-    fixture.store().write_object(Kind::Tree, &our_bytes).unwrap();
+    fixture
+        .store()
+        .write_object(Kind::Tree, &our_bytes)
+        .unwrap();
     let (_, content) = fixture.store().read_object(&real_sha).unwrap();
     let parsed = Tree::parse(&content).unwrap();
     assert_eq!(parsed.entries.len(), 2);
@@ -237,7 +268,11 @@ fn commit_sha_matches_git_commit_tree() {
         .envs(fixed_ident("A U Thor", "a@example.com"))
         .output()
         .unwrap();
-    assert!(out.status.success(), "commit-tree failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "commit-tree failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let real_sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
 
     // Our commit with identical input.
@@ -278,7 +313,10 @@ fn commit_sha_matches_git_commit_tree() {
     );
 
     // Store our commit; real git parses it; we parse git's commit back.
-    fixture.store().write_object(Kind::Commit, &our_second.serialize().unwrap()).unwrap();
+    fixture
+        .store()
+        .write_object(Kind::Commit, &our_second.serialize().unwrap())
+        .unwrap();
     fixture.fsck_clean();
     let (kind, content) = fixture.store().read_object(&real_second).unwrap();
     assert_eq!(kind, Kind::Commit);
@@ -309,7 +347,11 @@ fn tag_sha_matches_git_annotated_tag() {
         .envs(fixed_ident("T Ag", "t@example.com"))
         .output()
         .unwrap();
-    assert!(out.status.success(), "git tag failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git tag failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let real_sha = fixture.git(&["rev-parse", "v1.0"]);
 
     // Our tag with identical input. git tag appends a trailing newline to
@@ -341,8 +383,15 @@ fn tag_sha_matches_git_annotated_tag() {
 #[test]
 fn cat_file_and_object_dispatch_agree_with_git() {
     let fixture = Fixture::new();
-    let ids = blobs(&fixture, &[("a.txt", "hello\n")]);
-    let tree_sha = fixture.git_stdin(&["mktree"], &format!("100644 blob {}\ta.txt\n", ids[0]));
+    let ids = blobs(
+        &fixture,
+        &[("a.txt", "hello\n"), ("run.sh", "#!/bin/sh\necho hi\n")],
+    );
+    let mktree_input = format!(
+        "100644 blob {}\ta.txt\n100755 blob {}\trun.sh\n",
+        ids[0], ids[1]
+    );
+    let tree_sha = fixture.git_stdin(&["mktree"], &mktree_input);
     let out = Command::new("git")
         .args(["commit-tree", &tree_sha, "-m", "c1"])
         .current_dir(&fixture.dir)
@@ -364,4 +413,34 @@ fn cat_file_and_object_dispatch_agree_with_git() {
         // Serialization must reproduce the exact raw bytes git stored.
         assert_eq!(obj.serialize().unwrap(), content);
     }
+}
+
+#[test]
+fn cat_file_p_pretty_prints_tree_like_git() {
+    let fixture = Fixture::new();
+    let ids = blobs(
+        &fixture,
+        &[("a.txt", "hello\n"), ("run.sh", "#!/bin/sh\necho hi\n")],
+    );
+    let mktree_input = format!(
+        "100644 blob {}\ta.txt\n100755 blob {}\trun.sh\n",
+        ids[0], ids[1]
+    );
+    let tree_sha = fixture.git_stdin(&["mktree"], &mktree_input);
+
+    // Real git cat-file -p output for the tree.
+    let real = fixture.git(&["cat-file", "-p", &tree_sha]);
+
+    // Our cat-file -p via the binary.
+    let our = Command::new(env!("CARGO_BIN_EXE_git-rs"))
+        .args(["cat-file", "-p", &tree_sha])
+        .current_dir(&fixture.dir)
+        .output()
+        .unwrap();
+    assert!(
+        our.status.success(),
+        "our cat-file failed: {}",
+        String::from_utf8_lossy(&our.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&our.stdout), real);
 }

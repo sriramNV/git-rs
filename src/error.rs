@@ -33,7 +33,11 @@ pub enum GitError {
 impl GitError {
     /// Wrap an I/O error with the path and operation that failed.
     pub fn io(path: impl Into<String>, op: impl Into<String>, source: io::Error) -> Self {
-        GitError::Io { path: path.into(), op: op.into(), source }
+        GitError::Io {
+            path: path.into(),
+            op: op.into(),
+            source,
+        }
     }
 }
 
@@ -61,7 +65,11 @@ impl From<io::Error> for GitError {
     /// Fallback for `?` on raw I/O results; prefer `.context(path, op)` so
     /// every error names the path it came from.
     fn from(source: io::Error) -> Self {
-        GitError::Io { path: "<unknown>".into(), op: "<unknown>".into(), source }
+        GitError::Io {
+            path: "<unknown>".into(),
+            op: "<unknown>".into(),
+            source,
+        }
     }
 }
 
@@ -74,7 +82,11 @@ pub trait IoContext<T> {
 impl<T> IoContext<T> for std::result::Result<T, io::Error> {
     fn context<P: AsRef<Path>, O: AsRef<str>>(self, path: P, op: O) -> Result<T> {
         self.map_err(|source| {
-            GitError::io(path.as_ref().display().to_string(), op.as_ref().to_string(), source)
+            GitError::io(
+                path.as_ref().display().to_string(),
+                op.as_ref().to_string(),
+                source,
+            )
         })
     }
 }

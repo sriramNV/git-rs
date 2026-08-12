@@ -25,7 +25,12 @@ fn git_config(dir: &PathBuf, args: &[&str]) -> String {
         .current_dir(dir)
         .output()
         .expect("failed to run real git config");
-    assert!(out.status.success(), "git config {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git config {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -96,13 +101,25 @@ fn global_layer_matches_git_config_file() {
     let global_dir = scratch_dir("global");
     fs::create_dir_all(&global_dir).unwrap();
     let global_path = global_dir.join("gitconfig");
-    fs::write(&global_path, "[user]\n\tname = Global User\n\temail = global@example.com\n").unwrap();
+    fs::write(
+        &global_path,
+        "[user]\n\tname = Global User\n\temail = global@example.com\n",
+    )
+    .unwrap();
 
     let config = Config::load_with(&fixture.dir.join(".git"), Some(&global_path)).unwrap();
     assert_eq!(config.get("user", "name"), Some("Global User"));
 
     // Real git agrees when pointed at the same file.
-    let real = git_config(&fixture.dir, &["--file", global_path.to_str().unwrap(), "--get", "user.name"]);
+    let real = git_config(
+        &fixture.dir,
+        &[
+            "--file",
+            global_path.to_str().unwrap(),
+            "--get",
+            "user.name",
+        ],
+    );
     assert_eq!(real, "Global User");
 
     // Repo override wins over global in ours and in git.
@@ -137,7 +154,10 @@ fn version_guard_rejects_upgraded_repo_like_git() {
     fixture.set("core.repositoryformatversion", "2");
     let config = fixture.config();
     let err = config.check_repository_version().unwrap_err();
-    assert!(err.to_string().contains("Expected git repo version <= 1, found 2"));
+    assert!(
+        err.to_string()
+            .contains("Expected git repo version <= 1, found 2")
+    );
 
     // Real git also refuses on commands that read config (git config itself
     // skips the check; git log does not):
@@ -148,5 +168,7 @@ fn version_guard_rejects_upgraded_repo_like_git() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(128));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Expected git repo version <= 1, found 2"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Expected git repo version <= 1, found 2")
+    );
 }

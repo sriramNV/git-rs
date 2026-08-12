@@ -51,7 +51,9 @@ impl Tree {
                 .iter()
                 .position(|&b| b == b'\0')
                 .map(|p| name_start + p)
-                .ok_or_else(|| GitError::Corrupt("tree entry name missing NUL terminator".into()))?;
+                .ok_or_else(|| {
+                    GitError::Corrupt("tree entry name missing NUL terminator".into())
+                })?;
             let name = &rest[name_start..nul];
             if name.is_empty() {
                 return Err(GitError::Corrupt("tree entry has empty name".into()));
@@ -71,7 +73,11 @@ impl Tree {
             let mut oid = [0u8; 20];
             oid.copy_from_slice(oid_bytes);
 
-            entries.push(TreeEntry { mode, name: name.to_vec(), oid });
+            entries.push(TreeEntry {
+                mode,
+                name: name.to_vec(),
+                oid,
+            });
             rest = &rest[oid_end..];
         }
         Ok(Tree { entries })
@@ -132,7 +138,11 @@ mod tests {
     fn entry(mode: u32, name: &str, first_byte: u8) -> TreeEntry {
         let mut oid = [0u8; 20];
         oid[0] = first_byte;
-        TreeEntry { mode, name: name.as_bytes().to_vec(), oid }
+        TreeEntry {
+            mode,
+            name: name.as_bytes().to_vec(),
+            oid,
+        }
     }
 
     fn tree(entries: Vec<TreeEntry>) -> Tree {
@@ -143,11 +153,20 @@ mod tests {
     fn base_name_compare_sorts_like_git() {
         // Equal names: the file sorts before the dir.
         assert_eq!(base_name_compare(b"a", false, b"a", true), Ordering::Less);
-        assert_eq!(base_name_compare(b"a", true, b"a", false), Ordering::Greater);
+        assert_eq!(
+            base_name_compare(b"a", true, b"a", false),
+            Ordering::Greater
+        );
         // "a" vs "a.txt": "a" (file, ends NUL) < "a.txt" ('.' == 0x2e).
-        assert_eq!(base_name_compare(b"a", false, b"a.txt", false), Ordering::Less);
+        assert_eq!(
+            base_name_compare(b"a", false, b"a.txt", false),
+            Ordering::Less
+        );
         // "a" dir behaves as "a/": '/' (0x2f) > '.' → "a.txt" sorts first.
-        assert_eq!(base_name_compare(b"a", true, b"a.txt", false), Ordering::Greater);
+        assert_eq!(
+            base_name_compare(b"a", true, b"a.txt", false),
+            Ordering::Greater
+        );
         // Prefix: "a" < "ab".
         assert_eq!(base_name_compare(b"a", false, b"ab", false), Ordering::Less);
         // Identical: equal.

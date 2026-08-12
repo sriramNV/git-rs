@@ -24,13 +24,23 @@ pub struct Ident {
 impl Ident {
     /// Build an identity for writing. Rejects timezone offsets outside
     /// git's valid range (`-1200..=+1400`) — real git refuses these.
-    pub fn new(name: impl Into<String>, email: impl Into<String>, ts: i64, tz: i32) -> Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        email: impl Into<String>,
+        ts: i64,
+        tz: i32,
+    ) -> Result<Self> {
         if !(-1200..=1400).contains(&tz) {
             return Err(GitError::Invalid(format!(
                 "invalid timezone offset {tz}: must be between -1200 and +1400"
             )));
         }
-        Ok(Ident { name: name.into(), email: email.into(), ts, tz })
+        Ok(Ident {
+            name: name.into(),
+            email: email.into(),
+            ts,
+            tz,
+        })
     }
 
     /// Parse an ident line (without the `author `/`committer `/`tagger `
@@ -55,13 +65,24 @@ impl Ident {
             .parse()
             .map_err(|_| GitError::Corrupt(format!("bad ident timestamp '{ts}'")))?;
         let tz = parse_tz(tz.trim())?;
-        Ok(Ident { name, email, ts, tz })
+        Ok(Ident {
+            name,
+            email,
+            ts,
+            tz,
+        })
     }
 
     /// Render `Name <email> <ts> <tz>` for serialization.
     pub fn render(&self) -> String {
         let sign = if self.tz < 0 { '-' } else { '+' };
-        format!("{} <{}> {} {sign}{:04}", self.name, self.email, self.ts, self.tz.abs())
+        format!(
+            "{} <{}> {} {sign}{:04}",
+            self.name,
+            self.email,
+            self.ts,
+            self.tz.abs()
+        )
     }
 }
 
@@ -131,11 +152,23 @@ impl Commit {
                         .ok_or_else(|| GitError::Corrupt("commit missing committer line".into()))?;
                     let committer = Ident::parse(committer_line)?;
                     if lines.next().is_some() {
-                        return Err(GitError::Corrupt("commit has unexpected header line".into()));
+                        return Err(GitError::Corrupt(
+                            "commit has unexpected header line".into(),
+                        ));
                     }
-                    return Ok(Commit { tree, parents, author, committer, message: message.as_bytes().to_vec() });
+                    return Ok(Commit {
+                        tree,
+                        parents,
+                        author,
+                        committer,
+                        message: message.as_bytes().to_vec(),
+                    });
                 }
-                Some(_) => return Err(GitError::Corrupt("commit has unexpected header line".into())),
+                Some(_) => {
+                    return Err(GitError::Corrupt(
+                        "commit has unexpected header line".into(),
+                    ));
+                }
                 None => return Err(GitError::Corrupt("commit missing author/committer".into())),
             }
         }
@@ -258,7 +291,7 @@ mod tests {
         // Truncated: no committer.
         let text = String::from_utf8(bytes).unwrap();
         let cut = text.find("committer").unwrap();
-        assert!(Commit::parse(text[..cut].as_bytes()).is_err());
+        assert!(Commit::parse(&text.as_bytes()[..cut]).is_err());
     }
 
     #[test]
@@ -293,7 +326,10 @@ mod tests {
 
     #[test]
     fn render_matches_git_ident_format() {
-        assert_eq!(ident("A U Thor", "a@e.co", 1700000000, 530).render(), "A U Thor <a@e.co> 1700000000 +0530");
+        assert_eq!(
+            ident("A U Thor", "a@e.co", 1700000000, 530).render(),
+            "A U Thor <a@e.co> 1700000000 +0530"
+        );
         assert_eq!(ident("A", "a@e.co", 1, -700).render(), "A <a@e.co> 1 -0700");
         assert_eq!(ident("A", "a@e.co", 1, 0).render(), "A <a@e.co> 1 +0000");
     }

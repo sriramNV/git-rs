@@ -24,7 +24,7 @@ pub fn run_hash_object(args: &[String]) -> Result<()> {
             s if s.starts_with('-') => {
                 return Err(GitError::Invalid(format!(
                     "hash-object: unknown option '{arg}'"
-                )))
+                )));
             }
             _ => files.push(arg),
         }
@@ -60,7 +60,7 @@ pub fn run_hash_object(args: &[String]) -> Result<()> {
         None => {
             return Err(GitError::Invalid(
                 "usage: git-rs hash-object [-w] [--stdin] <file>".into(),
-            ))
+            ));
         }
     };
     let content = fs::read(path).context(path, "read file")?;
@@ -75,9 +75,9 @@ pub fn run_hash_object(args: &[String]) -> Result<()> {
 
 /// `git-rs cat-file (-t | -s | -p) <object>`
 ///
-/// Print the type, size, or content of an object. `-p` prints raw bytes
-/// (blob content verbatim; tree/commit pretty-printing arrives with the
-/// object-type steps).
+/// Print the type, size, or content of an object. `-p` prints pretty:
+/// blob/commit/tag content verbatim, trees in ls-tree format
+/// (`<mode> <type> <sha>\t<name>`) — matching real git.
 pub fn run_cat_file(args: &[String]) -> Result<()> {
     let mut want_type = false;
     let mut want_size = false;
@@ -92,16 +92,21 @@ pub fn run_cat_file(args: &[String]) -> Result<()> {
             "-e" | "-c" | "--batch" | "--batch-check" => {
                 return Err(GitError::Invalid(format!(
                     "cat-file: option '{arg}' not implemented in v1"
-                )))
+                )));
             }
             s if s.starts_with('-') => {
-                return Err(GitError::Invalid(format!("cat-file: unknown option '{arg}'")))
+                return Err(GitError::Invalid(format!(
+                    "cat-file: unknown option '{arg}'"
+                )));
             }
             s => object = Some(s),
         }
     }
 
-    let flags = [want_type, want_size, want_pretty].iter().filter(|f| **f).count();
+    let flags = [want_type, want_size, want_pretty]
+        .iter()
+        .filter(|f| **f)
+        .count();
     if flags != 1 {
         return Err(GitError::Invalid(
             "usage: git-rs cat-file (-t | -s | -p) <object>".into(),
@@ -118,10 +123,43 @@ pub fn run_cat_file(args: &[String]) -> Result<()> {
         println!("{}", kind.as_str());
     } else if want_size {
         println!("{}", content.len());
+    } else if kind == Kind::Tree {
+        print_tree(&content)?;
     } else {
         std::io::stdout()
             .write_all(&content)
             .context("<stdout>", "write object content")?;
     }
     Ok(())
+}
+
+/// Pretty-print a tree like `git ls-tree` / `git cat-file -p`:
+/// `<6-digit octal mode> <type> <sha>\t<name>` per entry, sorted (git
+/// stores trees sorted, so stored order is fine).
+fn print_tree(content: &[u8]) -> Result<()> {
+    use crate::object::Tree;
+    let tree = Tree::parse(content)?;
+    let mut out = Vec::new();
+    for (i, e) in tree.entries.iter().enumerate() {
+        out.extend_from_slice(format!("{:06o}", e.mode).as_bytes());
+        out.push(b' ');
+        let kind = match e.mode {
+            0o040000 => "tree",
+            0o160000 => "commit",
+            _ => "blob",
+        };
+        out.extend_from_slice(kind.as_bytes());
+        out.push(b' ');
+        for b in &e.oid {
+            out.extend_from_slice(format!("{b:02x}").as_bytes());
+        }
+        out.push(b'\t');
+        out.extend_from_slice(&e.name);
+        if i + 1 < tree.entries.len() {
+            out.push(b'\n');
+        }
+    }
+    std::io::stdout()
+        .write_all(&out)
+        .context("<stdout>", "write tree content")
 }

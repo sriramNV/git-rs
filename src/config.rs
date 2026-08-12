@@ -298,14 +298,16 @@ mod tests {
 
     #[test]
     fn subsection_is_collapsed_into_section() {
-        let (config, _repo, _global) = load_two("[remote \"origin\"]\nurl = https://example.com\n", "");
+        let (config, _repo, _global) =
+            load_two("[remote \"origin\"]\nurl = https://example.com\n", "");
         assert_eq!(config.get("remote", "url"), Some("https://example.com"));
         cleanup((config, _repo, _global));
     }
 
     #[test]
     fn repo_wins_over_global() {
-        let (config, _repo, _global) = load_two("[user]\nname = Repo User\n", "[user]\nname = Global User\n");
+        let (config, _repo, _global) =
+            load_two("[user]\nname = Repo User\n", "[user]\nname = Global User\n");
         assert_eq!(config.get("user", "name"), Some("Repo User"));
         cleanup((config, _repo, _global));
     }
@@ -334,10 +336,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_an_empty_layer() {
-        let base = env::temp_dir().join(format!(
-            "git-rs-config-missing-{}",
-            std::process::id()
-        ));
+        let base = env::temp_dir().join(format!("git-rs-config-missing-{}", std::process::id()));
         let git_dir = base.join(".git");
         fs::create_dir_all(&git_dir).unwrap();
         let config = Config::load_with(&git_dir, Some(&base.join("nope"))).unwrap();
@@ -347,10 +346,7 @@ mod tests {
 
     #[test]
     fn malformed_lines_are_errors() {
-        let base = env::temp_dir().join(format!(
-            "git-rs-config-bad-{}",
-            std::process::id()
-        ));
+        let base = env::temp_dir().join(format!("git-rs-config-bad-{}", std::process::id()));
         let git_dir = base.join(".git");
         fs::create_dir_all(&git_dir).unwrap();
         fs::write(git_dir.join("config"), "[core\nfilemode = true\n").unwrap();
@@ -361,10 +357,7 @@ mod tests {
 
     #[test]
     fn key_without_section_is_an_error() {
-        let base = env::temp_dir().join(format!(
-            "git-rs-config-orphan-{}",
-            std::process::id()
-        ));
+        let base = env::temp_dir().join(format!("git-rs-config-orphan-{}", std::process::id()));
         let git_dir = base.join(".git");
         fs::create_dir_all(&git_dir).unwrap();
         fs::write(git_dir.join("config"), "name = orphan\n").unwrap();
@@ -392,7 +385,10 @@ mod tests {
     fn version_guard_rejects_above_one() {
         let (config, _repo, _global) = load_two("[core]\nrepositoryformatversion = 2\n", "");
         let err = config.check_repository_version().unwrap_err();
-        assert!(err.to_string().contains("Expected git repo version <= 1, found 2"));
+        assert!(
+            err.to_string()
+                .contains("Expected git repo version <= 1, found 2")
+        );
         cleanup((config, _repo, _global));
     }
 
@@ -400,18 +396,17 @@ mod tests {
     fn version_guard_rejects_garbage_value() {
         let (config, _repo, _global) = load_two("[core]\nrepositoryformatversion = abc\n", "");
         let err = config.check_repository_version().unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("bad numeric config value 'abc' for 'core.repositoryformatversion'"));
+        assert!(
+            err.to_string()
+                .contains("bad numeric config value 'abc' for 'core.repositoryformatversion'")
+        );
         cleanup((config, _repo, _global));
     }
 
     #[test]
     fn identity_comes_from_config() {
-        let (config, _repo, _global) = load_two(
-            "[user]\nname = Test User\nemail = test@example.com\n",
-            "",
-        );
+        let (config, _repo, _global) =
+            load_two("[user]\nname = Test User\nemail = test@example.com\n", "");
         assert_eq!(
             config.user_identity(),
             Some(("Test User".to_string(), "test@example.com".to_string()))

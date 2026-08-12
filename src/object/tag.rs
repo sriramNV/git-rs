@@ -61,7 +61,13 @@ impl Tag {
         if lines.next().is_some() {
             return Err(GitError::Corrupt("tag has unexpected header line".into()));
         }
-        Ok(Tag { object, obj_type, name, tagger, message: message.as_bytes().to_vec() })
+        Ok(Tag {
+            object,
+            obj_type,
+            name,
+            tagger,
+            message: message.as_bytes().to_vec(),
+        })
     }
 
     /// Serialize in the locked header order, message bytes verbatim.
@@ -127,9 +133,7 @@ mod tests {
         let no_blank = text.replace("\n\n", "\n");
         assert!(Tag::parse(no_blank.as_bytes()).is_err());
         // Extra header after tagger.
-        let mut parts = text.splitn(2, "\n\n");
-        let heads = parts.next().unwrap();
-        let msg = parts.next().unwrap();
+        let (heads, msg) = text.split_once("\n\n").unwrap();
         let extra = format!("{heads}\nfoo bar\n\n{msg}");
         assert!(Tag::parse(extra.as_bytes()).is_err());
     }
@@ -139,6 +143,6 @@ mod tests {
         let bytes = sample_tag().serialize().unwrap();
         let text = String::from_utf8(bytes).unwrap();
         let cut = text.find("tagger").unwrap();
-        assert!(Tag::parse(text[..cut].as_bytes()).is_err());
+        assert!(Tag::parse(&text.as_bytes()[..cut]).is_err());
     }
 }

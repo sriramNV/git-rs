@@ -113,7 +113,10 @@ fn cat_file_missing_object_fails_like_git() {
     let ours = run_git_rs(&dir, &["cat-file", "-t", "deadbeef".repeat(5).as_str()]);
     assert_eq!(ours.status.code(), Some(128));
     let stderr = String::from_utf8_lossy(&ours.stderr);
-    assert!(stderr.contains("Not a valid object name"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("Not a valid object name"),
+        "stderr: {stderr}"
+    );
     // Real git 2.55 exits 128 too, but with "could not get object info"
     // (see decisions.md D-003 — message parity is a step 17 concern).
     let real = run_git(&dir, &["cat-file", "-t", "deadbeef".repeat(5).as_str()]);
