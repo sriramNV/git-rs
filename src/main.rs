@@ -20,6 +20,8 @@ fn main() -> ExitCode {
 fn exit_code(err: &GitError) -> u8 {
     match err {
         GitError::Invalid(_) => 1,
-        GitError::NotFound(_) | GitError::Corrupt(_) | GitError::Io { .. } => 128,
+        GitError::Fatal(_) | GitError::NotFound(_) | GitError::Corrupt(_) | GitError::Io { .. } => {
+            128
+        }
     }
 }

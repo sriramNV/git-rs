@@ -1,12 +1,13 @@
 //! Plumbing commands that talk to the object store directly.
 //!
-//! v1 houses `hash-object` and `cat-file` here; ls-tree, update-ref, and the
-//! rest of the plumbing join this file as they are implemented.
+//! v1 houses `hash-object`, `cat-file`, and `update-ref` here; ls-tree and
+//! the rest of the plumbing join this file as they are implemented.
 
 use std::fs;
 use std::io::{Read, Write};
 
 use crate::error::{GitError, IoContext, Result};
+use crate::refs::Refs;
 use crate::store::{Kind, ObjectStore};
 
 /// `git-rs hash-object [-w] [--stdin] <file>`
@@ -162,4 +163,72 @@ fn print_tree(content: &[u8]) -> Result<()> {
     std::io::stdout()
         .write_all(&out)
         .context("<stdout>", "write tree content")
+}
+
+/// `git-rs update-ref [-m <reason>] <ref> <new> [<old>]`
+///
+/// Create or update a ref, atomically. With `<old>`, the update only
+/// happens if the ref currently points at `<old>` (compare-and-swap).
+/// Writes a reflog entry when `core.logallrefupdates` is enabled.
+pub fn run_update_ref(args: &[String]) -> Result<()> {
+    let mut message = String::new();
+    let mut positional: Vec<&String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-m" => {
+                i += 1;
+                message = args
+                    .get(i)
+                    .ok_or_else(|| {
+                        GitError::Invalid("update-ref: option '-m' requires a reason".into())
+                    })?
+                    .clone();
+            }
+            s if s.starts_with('-') => {
+                return Err(GitError::Invalid(format!(
+                    "update-ref: unknown option '{s}'"
+                )));
+            }
+            _ => positional.push(&args[i]),
+        }
+        i += 1;
+    }
+    let (name, new_sha) = match (positional.first(), positional.get(1)) {
+        (Some(name), Some(new)) => (name.as_str(), new.as_str()),
+        _ => {
+            return Err(GitError::Invalid(
+                "usage: git-rs update-ref [-m <reason>] <ref> <new> [<old>]".into(),
+            ));
+        }
+    };
+    let old = positional.get(2).map(|s| s.as_str());
+
+    let refs = Refs::discover()?;
+    if let Some(old) = old {
+        let current = refs.resolve(name)?;
+        // git semantics: old == ZERO_SHA means "must not exist" (create-only).
+        if old == crate::refs::ZERO_SHA {
+            if current.is_some() {
+                return Err(GitError::Fatal(format!(
+                    "update_ref failed for ref '{name}': cannot lock ref '{name}': reference already exists"
+                )));
+            }
+        } else {
+            match current {
+                Some(actual) if actual == old => {}
+                Some(actual) => {
+                    return Err(GitError::Fatal(format!(
+                        "update_ref failed for ref '{name}': cannot lock ref '{name}': is at {actual} but expected {old}"
+                    )));
+                }
+                None => {
+                    return Err(GitError::Fatal(format!(
+                        "update_ref failed for ref '{name}': cannot lock ref '{name}': unable to resolve reference '{name}'"
+                    )));
+                }
+            }
+        }
+    }
+    refs.update(name, new_sha, &message)
 }

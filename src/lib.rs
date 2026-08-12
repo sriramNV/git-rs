@@ -6,4 +6,5 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod object;
+pub mod refs;
 pub mod store;

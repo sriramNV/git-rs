@@ -3,7 +3,7 @@
 //! No `clap`, no derive macros: a static command table plus explicit
 //! argument handling keeps behavior predictable and dependency-free.
 
-use crate::commands::hash_object::{run_cat_file, run_hash_object};
+use crate::commands::hash_object::{run_cat_file, run_hash_object, run_update_ref};
 use crate::error::{GitError, Result};
 
 /// A registered subcommand.
@@ -37,6 +37,12 @@ pub static COMMANDS: &[Command] = &[
         usage: "git-rs cat-file (-t | -s | -p) <object>",
         help: "print the type, size, or content of an object",
         run: run_cat_file,
+    },
+    Command {
+        name: "update-ref",
+        usage: "git-rs update-ref [-m <reason>] <ref> <new> [<old>]",
+        help: "update a ref atomically, with an optional expected old value",
+        run: run_update_ref,
     },
 ];
 
