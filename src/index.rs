@@ -23,7 +23,9 @@ const FIXED: usize = 62;
 /// and tests only — v1 never writes it).
 #[allow(dead_code)]
 const FLAG_ASSUME_VALID: u16 = 1 << 15;
-/// Bit 14: an extra 2-byte extended-flags field follows the fixed part.
+/// Bit 14: a 2-byte extended-flags field follows the fixed part, before the
+/// name (git's `ondisk_cache_entry_extended`). Rare in v2 files (git only
+/// *writes* extended entries for v3+, but reads them in any version).
 const FLAG_EXTENDED: u16 = 1 << 14;
 /// Bits 12-13: stage (0 normal, 1-3 merge slots).
 const FLAG_STAGE_MASK: u16 = 0x3000;
@@ -45,6 +47,9 @@ pub struct IndexEntry {
     pub size: u32,
     pub oid: [u8; 20],
     pub flags: u16,
+    /// The 2-byte extended-flags field, present only when `flags` bit 14 is
+    /// set; preserved verbatim on round-trip (v1 never sets its bits).
+    pub extended_flags: u16,
     /// Raw path bytes — never assumed UTF-8, slash separators, no leading `./`.
     pub path: Vec<u8>,
 }
@@ -56,8 +61,10 @@ impl IndexEntry {
     }
 
     /// Parse one entry from `data` at `pos`, returning the entry and the
-    /// position just past its padding. NUL is the only terminator — the
-    /// namelen bits are advisory (git writes 0x0FFF for long paths).
+    /// position just past its padding. The fixed part is 62 bytes, plus a
+    /// 2-byte extended-flags field when bit 14 is set (before the name —
+    /// git's `ondisk_cache_entry_extended`). NUL is the only terminator —
+    /// the namelen bits are advisory (git writes 0x0FFF for long paths).
     fn parse(data: &[u8], pos: usize) -> Result<(IndexEntry, usize)> {
         if data.len() < pos + FIXED + 1 {
             return Err(GitError::Corrupt("index entry truncated".into()));
@@ -85,25 +92,30 @@ impl IndexEntry {
         let mut oid = [0u8; 20];
         oid.copy_from_slice(&f[40..60]);
         let flags = u16::from_be_bytes([f[60], f[61]]);
-        // Read path to NUL; if the whole fixed part is NULs it's padding-only.
-        let mut end = pos + FIXED;
+        // Optional extended-flags field, located before the name.
+        let mut name_start = pos + FIXED;
+        let extended_flags = if flags & FLAG_EXTENDED != 0 {
+            if data.len() < pos + FIXED + 2 + 1 {
+                return Err(GitError::Corrupt(
+                    "index entry extended flags truncated".into(),
+                ));
+            }
+            let ef = u16::from_be_bytes([data[name_start], data[name_start + 1]]);
+            name_start += 2;
+            ef
+        } else {
+            0
+        };
+        // Read path to NUL; the namelen bits are advisory.
+        let mut end = name_start;
         while end < data.len() && data[end] != 0 {
             end += 1;
         }
         if end == data.len() {
             return Err(GitError::Corrupt("index entry name unterminated".into()));
         }
-        let path = data[pos + FIXED..end].to_vec();
+        let path = data[name_start..end].to_vec();
         let mut next = end + 1; // past the terminating NUL
-        if flags & FLAG_EXTENDED != 0 {
-            // 2-byte extended-flags field (v3 fields; v1: preserve, don't emit)
-            next += 2;
-        }
-        if next > data.len() {
-            return Err(GitError::Corrupt(
-                "index entry extended flags truncated".into(),
-            ));
-        }
         // Pad with NULs to an 8-byte boundary.
         next = (next + 7) & !7;
         if next > data.len() {
@@ -122,14 +134,16 @@ impl IndexEntry {
             size,
             oid,
             flags,
+            extended_flags,
             path,
         };
         Ok((entry, next))
     }
 
-    /// Serialize fixed part + NUL-terminated path, padded to 8 bytes.
-    /// The namelen bits are recomputed from the actual path length — git
-    /// does the same at write time; all other flag bits round-trip verbatim.
+    /// Serialize fixed part + optional extended-flags field + NUL-terminated
+    /// path, padded to 8 bytes. The namelen bits are recomputed from the
+    /// actual path length — git does the same at write time; all other flag
+    /// bits round-trip verbatim.
     fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(80);
         let push_i32 = |v: i32, out: &mut Vec<u8>| out.extend_from_slice(&v.to_be_bytes());
@@ -146,13 +160,11 @@ impl IndexEntry {
         out.extend_from_slice(&self.oid);
         let flags = (self.flags & !FLAG_NAMEMASK) | namelen_flags(self.path.len());
         out.extend_from_slice(&flags.to_be_bytes());
+        if flags & FLAG_EXTENDED != 0 {
+            out.extend_from_slice(&self.extended_flags.to_be_bytes());
+        }
         out.extend_from_slice(&self.path);
         out.push(0);
-        if self.flags & FLAG_EXTENDED != 0 {
-            // Preserve the flag; its 2-byte extended-flags field reads back
-            // as zeroes (v1 never sets the bits it contains).
-            out.extend_from_slice(&[0u8; 2]);
-        }
         while out.len() % 8 != 0 {
             out.push(0);
         }
@@ -192,8 +204,8 @@ impl Index {
             return Err(GitError::Corrupt("index file too short".into()));
         }
         let magic = &data[..4];
-        let version = u32::from_be_bytes(data[4..8].try_into().unwrap());
-        let count = u32::from_be_bytes(data[8..12].try_into().unwrap()) as usize;
+        let version = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let count = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
         if magic != b"DIRC" {
             return Err(GitError::Corrupt("bad index magic".into()));
         }
@@ -207,7 +219,7 @@ impl Index {
         let mut pos = 0usize;
         for _ in 0..count {
             let (entry, next) = IndexEntry::parse(rest, pos)
-                .map_err(|_| GitError::Corrupt("index entry malformed".into()))?;
+                .map_err(|e| GitError::Corrupt(format!("index entry {pos}: {e}")))?;
             entries.push(entry);
             pos = next;
         }
@@ -215,7 +227,12 @@ impl Index {
         let mut offset = pos;
         while offset + 20 < rest.len() {
             let sig = &rest[offset..offset + 4];
-            let len = u32::from_be_bytes(rest[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let len = u32::from_be_bytes([
+                rest[offset + 4],
+                rest[offset + 5],
+                rest[offset + 6],
+                rest[offset + 7],
+            ]) as usize;
             if !sig.iter().all(|b| b.is_ascii_alphabetic()) {
                 return Err(GitError::Corrupt(
                     "index extension signature invalid".into(),
@@ -330,6 +347,7 @@ mod tests {
             size: 9,
             oid,
             flags,
+            extended_flags: 0,
             path: path.to_vec(),
         }
     }
@@ -475,6 +493,24 @@ mod tests {
         let back = Index::read(&p).unwrap();
         assert_eq!(back.entries[0].path, long);
         assert_eq!(back.entries[0].flags & FLAG_NAMEMASK, FLAG_NAMEMASK);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extended_entry_round_trips_before_name() {
+        // git layout: 62-byte fixed part, then 2-byte extended flags, then
+        // name (probed against real git 2.55 — it reads such v2 files).
+        let dir = scratch();
+        let p = dir.join("index");
+        let mut idx = Index::new();
+        let mut e = entry(b"f.txt", blob_oid(1), FLAG_EXTENDED);
+        e.extended_flags = 0x1234;
+        idx.stage(e);
+        idx.write(&p).unwrap();
+        let back = Index::read(&p).unwrap();
+        assert_eq!(back.entries[0].flags & FLAG_EXTENDED, FLAG_EXTENDED);
+        assert_eq!(back.entries[0].extended_flags, 0x1234);
+        assert_eq!(back.entries[0].path, b"f.txt");
         let _ = fs::remove_dir_all(&dir);
     }
 
