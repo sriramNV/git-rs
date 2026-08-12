@@ -113,6 +113,20 @@ fn global_layer_matches_git_config_file() {
 }
 
 #[test]
+fn backslash_continuation_matches_git() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.dir.join(".git/config"),
+        "[user]\n\tname = First\\\n\tSecond\n\temail = a@b.c\n",
+    )
+    .unwrap();
+    let config = fixture.config();
+    assert_eq!(config.get("user", "name"), Some("First\tSecond"));
+    let real = git_config(&fixture.dir, &["--get", "user.name"]);
+    assert_eq!(real, "First\tSecond");
+}
+
+#[test]
 fn version_guard_rejects_upgraded_repo_like_git() {
     let fixture = Fixture::new();
 

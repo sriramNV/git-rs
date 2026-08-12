@@ -7,8 +7,7 @@
 //! ponytail: subsections are parsed but collapsed into their section name
 //! (`[remote "origin"]` and `[remote "upstream"]` share one slot, last
 //! wins) — fine until we read per-subsection keys (decisions.md D-004).
-//! Multi-line values, `include` directives, and system-level config are
-//! not read in v1.
+//! `include` directives and system-level config are not read in v1.
 
 use std::collections::HashMap;
 use std::env;
@@ -36,10 +35,7 @@ impl Config {
             Ok(dir) => PathBuf::from(dir),
             Err(_) => PathBuf::from(".git"),
         };
-        let global = match global_config_path() {
-            Some(path) => Some(path),
-            None => None,
-        };
+        let global = global_config_path();
         Self::load_with(&git_dir, global.as_deref())
     }
 
@@ -78,15 +74,23 @@ impl Config {
 
     /// Refuse to operate on repositories with `core.repositoryformatversion`
     /// above 1, matching real git 2.55 (which accepts 0 and 1, rejects 2+).
+    /// A value that is not a number is refused too — real git fails with
+    /// `bad numeric config value` (exit 128).
     pub fn check_repository_version(&self) -> Result<()> {
-        let version: i64 = self
-            .get("core", "repositoryformatversion")
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(0);
-        if version > 1 {
-            return Err(GitError::Invalid(format!(
-                "Expected git repo version <= 1, found {version}"
-            )));
+        if let Some(raw) = self.get("core", "repositoryformatversion") {
+            let version = match raw.trim().parse::<i64>() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Err(GitError::Corrupt(format!(
+                        "bad numeric config value '{raw}' for 'core.repositoryformatversion'"
+                    )));
+                }
+            };
+            if version > 1 {
+                return Err(GitError::Invalid(format!(
+                    "Expected git repo version <= 1, found {version}"
+                )));
+            }
         }
         Ok(())
     }
@@ -147,18 +151,25 @@ fn read_layer(path: &Path, what: &str) -> Result<HashMap<(String, String), Strin
 /// Parse INI-style config text into a `(section, key) -> value` map.
 ///
 /// Sections: `[core]` or `[section "sub"]` (subsection case preserved but
-/// collapsed into the section slot). Keys: `key = value`; a bare key is a
-/// boolean true. Comments are `#` or `;`. Section and key names are
-/// lowercased; values keep their case.
+/// collapsed into the section slot). Keys: `key = value`; a bare key stores
+/// an empty value and reads as boolean true. Comments are `#` or `;`.
+/// Section and key names are lowercased; values keep their case. A trailing
+/// backslash on a value line continues the value on the next line: the
+/// backslash is dropped and the continuation line is appended verbatim
+/// (real git's behavior — its leading whitespace is kept).
 fn parse(text: &str, path: &str) -> Result<HashMap<(String, String), String>> {
     let mut map = HashMap::new();
     let mut section = String::new();
-    for (i, line) in text.lines().enumerate() {
-        let line = line.trim();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let n = i + 1;
+        let raw = lines[i];
+        i += 1;
+        let line = raw.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
             continue;
         }
-        let n = i + 1;
         if line.starts_with('[') {
             section = parse_section(line, path, n)?;
             continue;
@@ -166,11 +177,24 @@ fn parse(text: &str, path: &str) -> Result<HashMap<(String, String), String>> {
         if section.is_empty() {
             return Err(bad_line(path, n, "key without a section"));
         }
-        let (key, value) = match line.split_once('=') {
-            Some((key, value)) => (key.trim(), value.trim()),
-            None => (line, "true"),
+        let (key, mut value) = match line.split_once('=') {
+            Some((key, value)) => (key.trim(), value.trim().to_string()),
+            // Bare key: empty value, boolean true (matches git).
+            None => (line, String::new()),
         };
-        map.insert((section.clone(), key.to_ascii_lowercase()), value.to_string());
+        let mut raw = raw;
+        while raw.ends_with('\\') {
+            value.pop();
+            if i >= lines.len() {
+                break;
+            }
+            raw = lines[i];
+            i += 1;
+            // The continuation line is appended verbatim — git keeps its
+            // leading whitespace.
+            value.push_str(raw);
+        }
+        map.insert((section.clone(), key.to_ascii_lowercase()), value);
     }
     Ok(map)
 }
@@ -195,7 +219,8 @@ fn bad_line(path: &str, n: usize, why: &str) -> GitError {
 
 fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "yes" | "on" | "1" => Some(true),
+        // Empty string = bare key in git; reads as true.
+        "true" | "yes" | "on" | "1" | "" => Some(true),
         "false" | "no" | "off" | "0" => Some(false),
         _ => None,
     }
@@ -227,9 +252,10 @@ mod tests {
     }
 
     fn cleanup(paths: (Config, PathBuf, PathBuf)) {
-        let (_, repo, global) = paths;
-        let _ = fs::remove_file(repo);
-        let _ = fs::remove_file(global);
+        let (_, repo, _) = paths;
+        if let Some(base) = repo.parent().and_then(Path::parent) {
+            let _ = fs::remove_dir_all(base);
+        }
     }
 
     #[test]
@@ -239,7 +265,6 @@ mod tests {
         assert_eq!(config.get("core", "filemode"), Some("true"));
         assert_eq!(config.get("Core", "FileMode"), Some("true"));
         assert_eq!(config.get("user", "name"), Some("Test User"));
-        assert_eq!(config.get("user", "email"), Some("test@example.com"));
         assert_eq!(config.get("user", "email"), Some("test@example.com"));
         assert_eq!(config.get("user", "missing"), None);
         cleanup((config, _repo, _global));
@@ -255,8 +280,19 @@ mod tests {
     #[test]
     fn bare_key_means_true() {
         let (config, _repo, _global) = load_two("[core]\nbare\nfilemode = false\n", "");
+        // Bare keys store an empty value (matches git) and read as bool true.
+        assert_eq!(config.get("core", "bare"), Some(""));
         assert_eq!(config.get_bool("core", "bare"), Some(true));
         assert_eq!(config.get_bool("core", "filemode"), Some(false));
+        cleanup((config, _repo, _global));
+    }
+
+    #[test]
+    fn backslash_continues_value_on_next_line() {
+        let (config, _repo, _global) =
+            load_two("[user]\nname = First\\\n\tSecond\nemail = a\\\n  b\n", "");
+        assert_eq!(config.get("user", "name"), Some("First\tSecond"));
+        assert_eq!(config.get("user", "email"), Some("a  b"));
         cleanup((config, _repo, _global));
     }
 
@@ -357,6 +393,16 @@ mod tests {
         let (config, _repo, _global) = load_two("[core]\nrepositoryformatversion = 2\n", "");
         let err = config.check_repository_version().unwrap_err();
         assert!(err.to_string().contains("Expected git repo version <= 1, found 2"));
+        cleanup((config, _repo, _global));
+    }
+
+    #[test]
+    fn version_guard_rejects_garbage_value() {
+        let (config, _repo, _global) = load_two("[core]\nrepositoryformatversion = abc\n", "");
+        let err = config.check_repository_version().unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("bad numeric config value 'abc' for 'core.repositoryformatversion'"));
         cleanup((config, _repo, _global));
     }
 
