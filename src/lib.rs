@@ -4,6 +4,7 @@
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod diff;
 pub mod error;
 pub mod ignore;
 pub mod index;

@@ -230,7 +230,7 @@ fn collect_tree(
 /// C-quote a path like git (core.quotePath=true): spaces, bytes below 0x20
 /// or from 0x7f up, quotes, and backslashes force quoting. Only the
 /// escape-able bytes are rewritten — space prints as-is inside the quotes.
-fn c_quote(path: &[u8]) -> String {
+pub(crate) fn c_quote(path: &[u8]) -> String {
     let needs = path
         .iter()
         .any(|&b| !(0x21..0x7f).contains(&b) || b == b'"' || b == b'\\');
@@ -284,7 +284,7 @@ fn raw_to_cwd(rel: &[u8], prefix: &[u8]) -> Vec<u8> {
 }
 
 /// Repo-relative prefix of `cwd` under `root`, as `/`-separated bytes.
-fn cwd_prefix(root: &Path, cwd: &Path) -> Result<Vec<u8>> {
+pub(crate) fn cwd_prefix(root: &Path, cwd: &Path) -> Result<Vec<u8>> {
     let rel = cwd.strip_prefix(root).map_err(|_| {
         GitError::Fatal(format!(
             "cannot determine path relative to '{}' (run git-rs from inside the repository)",
@@ -304,7 +304,7 @@ fn rel_os_path(rel: &[u8]) -> PathBuf {
     PathBuf::from(s.replace('/', std::path::MAIN_SEPARATOR_STR))
 }
 
-fn hex(oid: &[u8; 20]) -> String {
+pub(crate) fn hex(oid: &[u8; 20]) -> String {
     oid.iter().map(|b| format!("{b:02x}")).collect()
 }
 

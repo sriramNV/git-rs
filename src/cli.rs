@@ -4,6 +4,7 @@
 //! argument handling keeps behavior predictable and dependency-free.
 
 use crate::commands::add::run_add;
+use crate::commands::diff::run_diff;
 use crate::commands::hash_object::{run_cat_file, run_hash_object, run_update_ref};
 use crate::commands::status::run_status;
 use crate::error::{GitError, Result};
@@ -57,6 +58,12 @@ pub static COMMANDS: &[Command] = &[
         usage: "git-rs status [--short]",
         help: "show the working tree status (short format)",
         run: run_status,
+    },
+    Command {
+        name: "diff",
+        usage: "git-rs diff [--cached|--staged] [-- <paths>]",
+        help: "show changes between the worktree, index, and HEAD",
+        run: run_diff,
     },
 ];
 
