@@ -4,8 +4,11 @@
 //! argument handling keeps behavior predictable and dependency-free.
 
 use crate::commands::add::run_add;
+use crate::commands::commit::run_commit;
 use crate::commands::diff::run_diff;
 use crate::commands::hash_object::{run_cat_file, run_hash_object, run_update_ref};
+use crate::commands::log::run_log;
+use crate::commands::show::run_show;
 use crate::commands::status::run_status;
 use crate::error::{GitError, Result};
 
@@ -64,6 +67,24 @@ pub static COMMANDS: &[Command] = &[
         usage: "git-rs diff [--cached|--staged] [-- <paths>]",
         help: "show changes between the worktree, index, and HEAD",
         run: run_diff,
+    },
+    Command {
+        name: "commit",
+        usage: "git-rs commit -m <msg> [-m <msg>] [-a]",
+        help: "record changes into the repository",
+        run: run_commit,
+    },
+    Command {
+        name: "log",
+        usage: "git-rs log [--oneline] [-n <k>] [--all] [--graph]",
+        help: "show commit history (oneline format)",
+        run: run_log,
+    },
+    Command {
+        name: "show",
+        usage: "git-rs show [<rev>]",
+        help: "show a commit's header and change summary",
+        run: run_show,
     },
 ];
 

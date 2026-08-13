@@ -166,6 +166,52 @@ impl Refs {
         Ok(refs)
     }
 
+    /// Every ref name under `prefix` (loose files plus packed entries;
+    /// loose wins and each name appears once). Used by `--all` walks.
+    pub fn list_names(&self, prefix: &str) -> Result<Vec<String>> {
+        let mut names: Vec<String> = Vec::new();
+        self.walk_refs(&self.git_dir.join(prefix), &mut names)?;
+        for (name, _, _) in self.read_packed_refs()? {
+            if name.starts_with(&format!("{prefix}/")) && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// Recursively collect ref FILE names under a directory, as
+    /// `/`-separated names relative to the git dir (e.g. `refs/heads/main`).
+    /// A missing directory is empty; symlinks to refs are not followed.
+    fn walk_refs(&self, dir: &std::path::Path, out: &mut Vec<String>) -> Result<()> {
+        let read = match fs::read_dir(dir) {
+            Ok(r) => r,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(GitError::io(
+                    dir.display().to_string(),
+                    "read refs directory",
+                    e,
+                ));
+            }
+        };
+        for entry in read {
+            let entry = entry.context(dir.display().to_string(), "read refs directory")?;
+            let path = entry.path();
+            if path.is_dir() {
+                self.walk_refs(&path, out)?;
+            } else if let Ok(rel) = path.strip_prefix(&self.git_dir) {
+                let name = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push(name);
+            }
+        }
+        Ok(())
+    }
+
     /// Whether a ref name is valid per git's `check-ref-format` rules
     /// (rules.md): no `..`, no leading `.`, no whitespace, `~^:?*[\` or
     /// control chars; plus git's full set — no trailing `.`, no `.lock`
@@ -302,6 +348,16 @@ impl Refs {
             .context(&path, "append reflog")?;
         Ok(())
     }
+
+    /// The branch HEAD points at (`refs/heads/` stripped), when HEAD is a
+    /// symref; otherwise `None` (detached HEAD).
+    pub fn head_branch(&self) -> Option<String> {
+        let content = fs::read_to_string(self.git_dir.join("HEAD")).ok()?;
+        let target = symref_target(content.trim())?;
+        target
+            .strip_prefix("refs/heads/")
+            .map(|b| b.to_string())
+    }
 }
 
 /// The target of a symref line, else `None`.
@@ -321,7 +377,7 @@ fn is_sha(s: &str) -> bool {
 /// Unix seconds now, tz from `GIT_COMMITTER_DATE` (`<ts> <tz>`) if set,
 /// else UTC. Real git refuses an unparseable date with
 /// `invalid date format: <value>` (exit 128) — same here.
-fn now_with_tz() -> Result<(i64, String)> {
+pub(crate) fn now_with_tz() -> Result<(i64, String)> {
     if let Ok(date) = env::var("GIT_COMMITTER_DATE") {
         if let Some((ts, tz)) = date.split_once(' ')
             && let Ok(ts) = ts.trim().parse::<i64>()

@@ -162,7 +162,7 @@ pub fn run_add(args: &[String]) -> Result<()> {
 }
 
 /// Stat + hash a worktree file into an index entry (writes the blob).
-fn build_entry(root: &Path, store: &ObjectStore, rel: &[u8]) -> Result<IndexEntry> {
+pub(crate) fn build_entry(root: &Path, store: &ObjectStore, rel: &[u8]) -> Result<IndexEntry> {
     let abs = root.join(rel_os_path(rel));
     let st = stat_file(&abs)?;
     let oid = hash_entry(store, &abs, true)?;

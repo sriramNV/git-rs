@@ -49,6 +49,7 @@ impl Kind {
 /// Loose object store rooted at an objects directory.
 ///
 /// Everything that touches `.git/objects` goes through this type.
+#[derive(Clone)]
 pub struct ObjectStore {
     root: PathBuf,
 }

@@ -10,10 +10,14 @@ fn main() -> ExitCode {
     match cli::dispatch(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            match &err {
-                // Invalid errors print bare — real git omits the fatal:
+match &err {
+                // Invalid errors print bare -- real git omits the fatal:
                 // prefix for these (e.g. ignored-paths add error, probed).
-                GitError::Invalid(_) => eprintln!("{err}"),
+                // An empty Invalid message is a sentinel for commands that
+                // already printed their own output (commit's empty-commit
+                // notices go to stdout, exit 1).
+                GitError::Invalid(msg) if !msg.is_empty() => eprintln!("{err}"),
+                GitError::Invalid(_) => {}
                 _ => eprintln!("fatal: {err}"),
             }
             ExitCode::from(exit_code(&err))

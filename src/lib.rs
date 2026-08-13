@@ -10,5 +10,6 @@ pub mod ignore;
 pub mod index;
 pub mod object;
 pub mod refs;
+pub mod revwalk;
 pub mod store;
 pub mod worktree;
