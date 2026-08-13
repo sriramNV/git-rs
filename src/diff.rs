@@ -478,7 +478,8 @@ pub struct FileDiff {
     /// `diff --git` / binary-line paths: `a/<path>` / `b/<path>`, quoted.
     pub hdr_old: String,
     pub hdr_new: String,
-    /// `---` / `+++` paths: as above, or `/dev/null` when the side is empty.
+    /// `---` / `+++` paths (and the `Binary files` labels): as above, or
+    /// `/dev/null` when the side is empty.
     pub body_old: String,
     pub body_new: String,
     /// 40-hex oids; the missing side is `0000...0`.
@@ -512,14 +513,20 @@ pub fn render(f: &FileDiff) -> Vec<u8> {
     }
     out.extend_from_slice(format!("{index}\n").as_bytes());
     if f.binary {
+        // git uses the /dev/null-aware labels here, not the raw header
+        // paths (diff.c: lbl[]).
         out.extend_from_slice(
-            format!("Binary files {} and {} differ\n", f.hdr_old, f.hdr_new).as_bytes(),
+            format!("Binary files {} and {} differ\n", f.body_old, f.body_new).as_bytes(),
         );
         return out;
     }
     if !f.hunks.is_empty() {
-        out.extend_from_slice(format!("--- {}\n", f.body_old).as_bytes());
-        out.extend_from_slice(format!("+++ {}\n", f.body_new).as_bytes());
+        // git appends a TAB to the ---/+++ labels when the label contains a
+        // space (diff.c DIFF_SYMBOL_FILEPAIR_*, strchr(line, ' ')).
+        let old_tab = if f.body_old.contains(' ') { "\t" } else { "" };
+        let new_tab = if f.body_new.contains(' ') { "\t" } else { "" };
+        out.extend_from_slice(format!("--- {}{}\n", f.body_old, old_tab).as_bytes());
+        out.extend_from_slice(format!("+++ {}{}\n", f.body_new, new_tab).as_bytes());
         for h in &f.hunks {
             let mut head = format!(
                 "@@ -{} +{} @@",
@@ -874,6 +881,48 @@ mod tests {
         assert_eq!(
             out,
             "diff --git a/x.bin b/x.bin\nindex aaaaaaa..bbbbbbb 100644\nBinary files a/x.bin and b/x.bin differ\n"
+        );
+    }
+
+    #[test]
+    fn render_binary_uses_dev_null_labels() {
+        let new_bin = FileDiff {
+            hdr_old: "a/n.bin".into(),
+            hdr_new: "b/n.bin".into(),
+            body_old: "/dev/null".into(),
+            body_new: "b/n.bin".into(),
+            old_oid: "0000000000000000000000000000000000000000".into(),
+            new_oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            old_mode: 0,
+            new_mode: 0o100644,
+            binary: true,
+            hunks: Vec::new(),
+        };
+        let out = String::from_utf8(render(&new_bin)).unwrap();
+        assert!(
+            out.contains("Binary files /dev/null and b/n.bin differ\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn render_tabs_filepair_labels_containing_spaces() {
+        let f = FileDiff {
+            hdr_old: "a/my file.txt".into(),
+            hdr_new: "b/my file.txt".into(),
+            body_old: "a/my file.txt".into(),
+            body_new: "b/my file.txt".into(),
+            old_oid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            new_oid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            old_mode: 0o100644,
+            new_mode: 0o100644,
+            binary: false,
+            hunks: diff_lines(&lines(&["v1\n"]), &lines(&["v2\n"])),
+        };
+        let out = String::from_utf8(render(&f)).unwrap();
+        assert!(
+            out.contains("--- a/my file.txt\t\n+++ b/my file.txt\t\n"),
+            "{out}"
         );
     }
 }

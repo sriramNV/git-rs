@@ -7,6 +7,11 @@
 //! gitlink (160000) entries are skipped; oids are abbreviated to 7 chars
 //! (git's default for small repos); unmatched pathspecs are silently
 //! ignored. `-M`/`-C` print "not supported" and exit 1.
+//!
+//! Path quoting follows git's `quote_two` (diff.c CQUOTE_NODQ): spaces are
+//! NOT quoted, non-ASCII is octal-escaped inside quotes (core.quotepath on
+//! by default); `---`/`+++` labels gain a trailing tab when they contain a
+//! space; the `Binary files` line uses the `/dev/null`-aware labels.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -118,22 +123,13 @@ pub fn run_diff(args: &[String]) -> Result<()> {
         if old_mode == 0o160000 || new_mode == 0o160000 {
             continue; // gitlink, v1 skips (D-014)
         }
-        let quoted = crate::commands::status::c_quote(p);
-        let a = format!("a/{quoted}");
-        let b = format!("b/{quoted}");
+        let a = quote_two("a", p);
+        let b = quote_two("b", p);
         let mut f = FileDiff {
-            hdr_old: a,
-            hdr_new: b,
-            body_old: if old_mode == 0 {
-                "/dev/null".into()
-            } else {
-                format!("a/{quoted}")
-            },
-            body_new: if new_mode == 0 {
-                "/dev/null".into()
-            } else {
-                format!("b/{quoted}")
-            },
+            hdr_old: a.clone(),
+            hdr_new: b.clone(),
+            body_old: if old_mode == 0 { "/dev/null".into() } else { a },
+            body_new: if new_mode == 0 { "/dev/null".into() } else { b },
             old_oid,
             new_oid,
             old_mode,
@@ -247,4 +243,32 @@ fn collect_tree(
 
 fn zero_oid() -> String {
     "0".repeat(40)
+}
+
+/// `<prefix>/<path>` (e.g. `a/x.txt`), quoted like git's `quote_two` with
+/// `CQUOTE_NODQ` (diff.c): the whole label is wrapped in one pair of quotes
+/// only when a byte needs escaping (`< 0x20`, `0x7f`, `"`, `\`, or `> 0x7f`
+/// with core.quotepath on). Spaces stay literal and unquoted — unlike
+/// status's C-quoting.
+fn quote_two(prefix: &str, path: &[u8]) -> String {
+    let needs = path
+        .iter()
+        .any(|&b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\' || b > 0x7f);
+    if !needs {
+        return format!("{prefix}/{}", String::from_utf8_lossy(path));
+    }
+    let mut s = format!("\"{prefix}/");
+    for &b in path {
+        match b {
+            b'\t' => s.push_str("\\t"),
+            b'\n' => s.push_str("\\n"),
+            b'"' => s.push_str("\\\""),
+            b'\\' => s.push_str("\\\\"),
+            0x7f => s.push_str("\\177"),
+            _ if !(0x20..=0x7f).contains(&b) => s.push_str(&format!("\\{b:03o}")),
+            _ => s.push(b as char),
+        }
+    }
+    s.push('"');
+    s
 }

@@ -201,3 +201,42 @@ fn funcname_suffix_matches_git() {
     write(&f, "f.txt", &new.concat());
     f.assert_same(&["diff"]);
 }
+
+#[test]
+fn funcname_truncates_long_lines_to_80() {
+    // The nearest letter-leading line is 200 bytes: git's def_ff caps the
+    // suffix at 80 bytes (probed against git 2.55).
+    let f = Fixture::new();
+    let mut lines: Vec<String> = vec![format!("L{}\n", "a".repeat(200))];
+    lines.extend((1..=10).map(|i| format!("{i}\n")));
+    f.seed_commit(&[("f.txt", &lines.concat())]);
+    let mut new = lines.clone();
+    new[10] = "11\n".into();
+    write(&f, "f.txt", &new.concat());
+    f.assert_same(&["diff"]);
+}
+
+#[test]
+fn quoting_and_binary_cases_match_git() {
+    // Spaced and non-ASCII names exercise quote_two (CQUOTE_NODQ: spaces
+    // unquoted, non-ASCII octal-escaped), the ---/+++ trailing-tab rule,
+    // and the /dev/null labels in the Binary files line.
+    let f = Fixture::new();
+    f.seed_commit(&[
+        ("sp ace.txt", "one\ntwo\n"),
+        ("caf\u{e9}.txt", "one\n"),
+        ("b.bin", "A\0B\0"),
+        ("gone.bin", "G\0O\0"),
+    ]);
+
+    write(&f, "sp ace.txt", "one\nTWO\n");
+    write(&f, "caf\u{e9}.txt", "ONE\n");
+    write(&f, "b.bin", "C\0D\0");
+    fs::remove_file(f.dir.join("gone.bin")).unwrap();
+    fs::write(f.dir.join("n.bin"), [9u8, 0, 10]).unwrap();
+    f.assert_same(&["diff"]);
+    f.assert_same(&["diff", "--", "sp ace.txt"]);
+
+    f.real(&["add", "--all"]);
+    f.assert_same(&["diff", "--cached"]);
+}
