@@ -12,7 +12,7 @@
 use crate::error::{GitError, Result};
 use crate::object::Commit;
 use crate::refs::Refs;
-use crate::revwalk::{hex, resolve_rev, unborn_fatal, Revwalk};
+use crate::revwalk::{Revwalk, hex, resolve_rev, unborn_fatal};
 use crate::store::{Kind, ObjectStore};
 
 /// `git-rs log [--oneline] [-n <k>] [--all] [--graph]`
@@ -75,7 +75,7 @@ pub fn run_log(args: &[String]) -> Result<()> {
         }
     }
 
-    while let Some(sha) = walk.next()? {
+    while let Some(sha) = walk.pop_next()? {
         let subject = commit_subject(&store, &sha)?;
         let short = &hex(&sha)[..7];
         if graph {

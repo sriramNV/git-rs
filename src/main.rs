@@ -10,7 +10,7 @@ fn main() -> ExitCode {
     match cli::dispatch(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-match &err {
+            match &err {
                 // Invalid errors print bare -- real git omits the fatal:
                 // prefix for these (e.g. ignored-paths add error, probed).
                 // An empty Invalid message is a sentinel for commands that

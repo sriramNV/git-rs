@@ -131,6 +131,12 @@ fn print_stat(store: &ObjectStore, old_tree: Option<&str>, new_tree: &str) -> Re
     for p in paths {
         let old_oid = old.get(p);
         let new_oid = new.get(p);
+        // Unchanged blob (same oid): git lists nothing for it.
+        if let (Some(o), Some(n)) = (old_oid, new_oid)
+            && o == n
+        {
+            continue;
+        }
         let mut s = StatFile {
             path: (*p).clone(),
             ins: 0,
@@ -192,9 +198,16 @@ fn print_stat(store: &ObjectStore, old_tree: Option<&str>, new_tree: &str) -> Re
         del += s.del;
         let name = String::from_utf8_lossy(&s.path);
         if s.binary {
-            println!(" {name:<width$} | Bin {} -> {} bytes", s.old_size, s.new_size);
+            println!(
+                " {name:<width$} | Bin {} -> {} bytes",
+                s.old_size, s.new_size
+            );
         } else if s.ins + s.del > 0 {
-            let sym = format!("{}{}", "+".repeat(s.ins as usize), "-".repeat(s.del as usize));
+            let sym = format!(
+                "{}{}",
+                "+".repeat(s.ins as usize),
+                "-".repeat(s.del as usize)
+            );
             println!(" {name:<width$} | {} {sym}", s.ins + s.del);
         } else {
             // Mode-only change: filename alone, no bar (git shows the name).
@@ -229,10 +242,7 @@ fn print_stat(store: &ObjectStore, old_tree: Option<&str>, new_tree: &str) -> Re
 }
 
 /// Path → blob oid map for every blob under a tree (empty when no tree).
-fn tree_blobs(
-    store: &ObjectStore,
-    tree: Option<&str>,
-) -> Result<HashMap<Vec<u8>, [u8; 20]>> {
+fn tree_blobs(store: &ObjectStore, tree: Option<&str>) -> Result<HashMap<Vec<u8>, [u8; 20]>> {
     let mut out = HashMap::new();
     let Some(tree) = tree else {
         return Ok(out);
@@ -259,7 +269,10 @@ fn collect_tree(
             prefix.push(b'/');
             let (kind, content) = store.read_object(&hex_oid(&e.oid))?;
             if kind != Kind::Tree {
-                return Err(GitError::Corrupt(format!("{} is not a tree", hex_oid(&e.oid))));
+                return Err(GitError::Corrupt(format!(
+                    "{} is not a tree",
+                    hex_oid(&e.oid)
+                )));
             }
             let sub = crate::object::Tree::parse(&content)?;
             collect_tree(store, &sub, prefix, out)?;

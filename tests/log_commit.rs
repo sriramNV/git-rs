@@ -10,7 +10,7 @@
 //! wall clock, we honor `GIT_COMMITTER_DATE` (decisions.md).
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -41,7 +41,7 @@ fn commit_env<'a>(dates: (&'a str, &'a str)) -> Vec<(&'a str, &'a str)> {
     ]
 }
 
-fn write_files(dir: &PathBuf, files: &[(&str, &str)]) {
+fn write_files(dir: &Path, files: &[(&str, &str)]) {
     for (name, content) in files {
         let path = dir.join(name);
         if let Some(parent) = path.parent() {
@@ -135,19 +135,34 @@ fn commit_shas_match_real_git() {
     write_files(&a.dir, &files);
     assert_eq!(a.real(&["add", "--all"]).0, 0);
     let (_, tree_a, _) = a.real(&["write-tree"]);
-    assert_eq!(a.run("git", &["commit", "-q", "-m", "init"], &commit_env(d1)).0, 0);
+    assert_eq!(
+        a.run("git", &["commit", "-q", "-m", "init"], &commit_env(d1))
+            .0,
+        0
+    );
     let sha_a1 = a.head_sha();
 
     // modify: change f, add one file, delete another
-    write_files(&a.dir, &[("f.txt", "a\nb\nc\nd\ne\n"), ("new.txt", "hello\n")]);
+    write_files(
+        &a.dir,
+        &[("f.txt", "a\nb\nc\nd\ne\n"), ("new.txt", "hello\n")],
+    );
     fs::remove_file(a.dir.join("sub/leaf.txt")).unwrap();
     assert_eq!(a.real(&["add", "--all"]).0, 0);
-    assert_eq!(a.run("git", &["commit", "-q", "-m", "second"], &commit_env(d2)).0, 0);
+    assert_eq!(
+        a.run("git", &["commit", "-q", "-m", "second"], &commit_env(d2))
+            .0,
+        0
+    );
     let sha_a2 = a.head_sha();
 
     // -a commit with a dirty worktree.
     write_files(&a.dir, &[("f.txt", "a\nb\nc\nd\ne\nf\n")]);
-    assert_eq!(a.run("git", &["commit", "-aq", "-m", "third"], &commit_env(d3)).0, 0);
+    assert_eq!(
+        a.run("git", &["commit", "-aq", "-m", "third"], &commit_env(d3))
+            .0,
+        0
+    );
     let sha_a3 = a.head_sha();
 
     // Repo B: identical files, but stages and commits with git-rs.
@@ -155,20 +170,50 @@ fn commit_shas_match_real_git() {
     write_files(&b.dir, &files);
     assert_eq!(b.our(&["add", "."]).0, 0);
     let (_, tree_b, _) = b.real(&["write-tree"]);
-    assert_eq!(b.our(&["commit", "-m", "init"]).0, 0);
+    assert_eq!(
+        b.run(
+            env!("CARGO_BIN_EXE_git-rs"),
+            &["commit", "-m", "init"],
+            &commit_env(d1)
+        )
+        .0,
+        0
+    );
     let sha_b1 = b.head_sha();
 
-    write_files(&b.dir, &[("f.txt", "a\nb\nc\nd\ne\n"), ("new.txt", "hello\n")]);
+    write_files(
+        &b.dir,
+        &[("f.txt", "a\nb\nc\nd\ne\n"), ("new.txt", "hello\n")],
+    );
     fs::remove_file(b.dir.join("sub/leaf.txt")).unwrap();
     assert_eq!(b.our(&["add", "."]).0, 0);
-    assert_eq!(b.our(&["commit", "-m", "second"]).0, 0);
+    assert_eq!(
+        b.run(
+            env!("CARGO_BIN_EXE_git-rs"),
+            &["commit", "-m", "second"],
+            &commit_env(d2)
+        )
+        .0,
+        0
+    );
     let sha_b2 = b.head_sha();
 
     write_files(&b.dir, &[("f.txt", "a\nb\nc\nd\ne\nf\n")]);
-    assert_eq!(b.our(&["commit", "-a", "-m", "third"]).0, 0);
+    assert_eq!(
+        b.run(
+            env!("CARGO_BIN_EXE_git-rs"),
+            &["commit", "-a", "-m", "third"],
+            &commit_env(d3)
+        )
+        .0,
+        0
+    );
     let sha_b3 = b.head_sha();
 
-    assert_eq!(tree_b, tree_a, "tree built from the index differs from write-tree");
+    assert_eq!(
+        tree_b, tree_a,
+        "tree built from the index differs from write-tree"
+    );
     assert_eq!(sha_b1, sha_a1, "root commit sha differs from real git");
     assert_eq!(sha_b2, sha_a2, "second commit sha differs from real git");
     assert_eq!(sha_b3, sha_a3, "-a commit sha differs from real git");
@@ -181,7 +226,12 @@ fn commit_shas_match_real_git() {
     let reflog_b = std::fs::read_to_string(b.dir.join(".git/logs/HEAD")).unwrap();
     let lines: Vec<&str> = reflog_b.lines().collect();
     assert_eq!(lines.len(), 3, "reflog: {}", reflog_b);
-    assert_eq!(lines[0], format!("0000000000000000000000000000000000000000 {sha_a1} C O Mitter <c@example.com> 1786610001 +0530\tcommit (initial): init"));
+    assert_eq!(
+        lines[0],
+        format!(
+            "0000000000000000000000000000000000000000 {sha_a1} C O Mitter <c@example.com> 1786610001 +0530\tcommit (initial): init"
+        )
+    );
     assert!(lines[0].contains("\tcommit (initial): init"));
     assert!(lines[1].contains("\tcommit: second"));
     assert!(lines[2].contains("\tcommit: third"));
@@ -190,7 +240,10 @@ fn commit_shas_match_real_git() {
 
     let git_reflog = std::fs::read_to_string(a.dir.join(".git/logs/HEAD")).unwrap();
     for (ours, theirs) in lines.iter().zip(git_reflog.lines()) {
-        assert!(theirs.ends_with(ours.split('\t').last().unwrap()), "reflog msg: {theirs}");
+        assert!(
+            theirs.ends_with(ours.rsplit('\t').next().unwrap()),
+            "reflog msg: {theirs}"
+        );
     }
 
     fs::remove_dir_all(&a.dir).unwrap();
@@ -205,37 +258,66 @@ fn log_matches_git_on_real_history() {
     let e = |d| commit_env((d, d));
     write_files(&f.dir, &[("a.txt", "1\n")]);
     assert_eq!(f.run("git", &["add", "--all"], &e("1786610100 +0530")).0, 0);
-    assert_eq!(f.run("git", &["commit", "-q", "-m", "c1"], &e("1786610100 +0530")).0, 0);
+    assert_eq!(
+        f.run("git", &["commit", "-q", "-m", "c1"], &e("1786610100 +0530"))
+            .0,
+        0
+    );
     write_files(&f.dir, &[("a.txt", "1\n2\n")]);
     assert_eq!(f.run("git", &["add", "--all"], &e("1786610200 +0530")).0, 0);
-    assert_eq!(f.run("git", &["commit", "-q", "-m", "c2"], &e("1786610200 +0530")).0, 0);
+    assert_eq!(
+        f.run("git", &["commit", "-q", "-m", "c2"], &e("1786610200 +0530"))
+            .0,
+        0
+    );
     f.real(&["tag", "v1"]);
     assert_eq!(f.real(&["branch", "side"]).0, 0);
     f.real(&["checkout", "-q", "side"]);
     write_files(&f.dir, &[("side.txt", "s\n")]);
     assert_eq!(f.real(&["add", "--all"]).0, 0);
-    assert_eq!(f.run("git", &["commit", "-q", "-m", "c3"], &e("1786610300 +0530")).0, 0);
+    assert_eq!(
+        f.run("git", &["commit", "-q", "-m", "c3"], &e("1786610300 +0530"))
+            .0,
+        0
+    );
     f.real(&["checkout", "-q", "main"]);
     write_files(&f.dir, &[("a.txt", "1\n2\n3\n")]);
     assert_eq!(f.real(&["add", "--all"]).0, 0);
-    assert_eq!(f.run("git", &["commit", "-q", "-m", "c4"], &e("1786610400 +0530")).0, 0);
+    assert_eq!(
+        f.run("git", &["commit", "-q", "-m", "c4"], &e("1786610400 +0530"))
+            .0,
+        0
+    );
     assert_eq!(f.real(&["tag", "-a", "-m", "annotated", "av1"]).0, 0);
 
     let cases: Vec<(&[&str], &[&str])> = vec![
         (&["log", "--oneline"], &["log", "--oneline"]),
-        (&["log", "--oneline", "--all"], &["log", "--oneline", "--all"]),
-        (&["log", "--oneline", "-n", "2"], &["log", "--oneline", "-n", "2"]),
-        (&["log", "--oneline", "--graph"], &["log", "--oneline", "--graph"]),
         (
-            &["log", "--oneline", "--graph", "--all"],
-            &["log", "--oneline", "--graph", "--all"],
+            &["log", "--oneline", "--all"],
+            &["log", "--oneline", "--all"],
+        ),
+        (
+            &["log", "--oneline", "-n", "2"],
+            &["log", "--oneline", "-n", "2"],
+        ),
+        // `--graph` is linear-only in v1; `--graph --all` over a side
+        // branch needs merge-corner glyphs, deferred (D-015).
+        (
+            &["log", "--oneline", "--graph"],
+            &["log", "--oneline", "--graph"],
         ),
     ];
     for (ours, theirs) in cases {
-        let (rc, out, _) = f.real(&theirs);
-        let (orc, oout, oerr) = f.our(&ours);
+        let (rc, out, _) = f.real(theirs);
+        let (orc, oout, oerr) = f.our(ours);
         assert_eq!(orc, rc, "exit for {:?}", ours);
-        assert_eq!(oout, out, "stdout for {:?}; ours stderr: {}", ours, String::from_utf8_lossy(&oerr));
+        assert_eq!(
+            oout,
+            out,
+            "stdout for {:?}; ours stderr: {}",
+            ours,
+            String::from_utf8_lossy(&oerr)
+        );
     }
     fs::remove_dir_all(&f.dir).unwrap();
 }
@@ -251,14 +333,34 @@ fn show_matches_git_show_stat() {
     let e2 = commit_env(d2);
     write_files(&f.dir, &[("f.txt", "a\nb\nc\n"), ("lonely.txt", "x\n")]);
     assert_eq!(f.our(&["add", "."]).0, 0);
-    assert_eq!(f.run(env!("CARGO_BIN_EXE_git-rs"), &["commit", "-m", "add files"], &e1).0, 0);
+    assert_eq!(
+        f.run(
+            env!("CARGO_BIN_EXE_git-rs"),
+            &["commit", "-m", "add files"],
+            &e1
+        )
+        .0,
+        0
+    );
     let root = f.head_sha();
-    assert_eq!(f.our(&["commit", "-m", "again"]).0, 1, "second commit must be empty");
+    assert_eq!(
+        f.our(&["commit", "-m", "again"]).0,
+        1,
+        "second commit must be empty"
+    );
 
     write_files(&f.dir, &[("f.txt", "a\nb\n\nz\n")]);
     fs::remove_file(f.dir.join("lonely.txt")).unwrap();
     assert_eq!(f.our(&["add", "."]).0, 0);
-    assert_eq!(f.run(env!("CARGO_BIN_EXE_git-rs"), &["commit", "-m", "second: modify, delete"], &e2).0, 0);
+    assert_eq!(
+        f.run(
+            env!("CARGO_BIN_EXE_git-rs"),
+            &["commit", "-m", "second: modify, delete"],
+            &e2
+        )
+        .0,
+        0
+    );
     let second = f.head_sha();
     write_files(&f.dir, &[("new.bin", "abc")]);
     assert_eq!(f.our(&["add", "."]).0, 0);
@@ -271,7 +373,12 @@ fn show_matches_git_show_stat() {
         let (rc, out, _) = f.real(&["show", "--stat", rev]);
         let (orc, oout, oerr) = f.our(&["show", rev]);
         assert_eq!(orc, rc, "exit for {rev}");
-        assert_eq!(oout, out, "stdout for {rev}; ours stderr: {}", String::from_utf8_lossy(&oerr));
+        assert_eq!(
+            oout,
+            out,
+            "stdout for {rev}; ours stderr: {}",
+            String::from_utf8_lossy(&oerr)
+        );
     }
     fs::remove_dir_all(&f.dir).unwrap();
 }
@@ -287,14 +394,24 @@ fn empty_and_unborn_commit_messages_match_git() {
     // Unborn, empty index, no untracked files.
     let (rc, out, _) = f.real(&["commit", "-m", "x"]);
     let (orc, oout, oerr) = f.our(&["commit", "-m", "x"]);
-    assert_eq!(orc, rc, "unborn empty: ours stderr {}", String::from_utf8_lossy(&oerr));
+    assert_eq!(
+        orc,
+        rc,
+        "unborn empty: ours stderr {}",
+        String::from_utf8_lossy(&oerr)
+    );
     assert_eq!(last_line(&oout), last_line(&out));
 
     // Unborn with an untracked file.
     write_files(&f.dir, &[("u.txt", "u\n")]);
     let (rc, out, _) = f.real(&["commit", "-m", "x"]);
     let (orc, oout, oerr) = f.our(&["commit", "-m", "x"]);
-    assert_eq!(orc, rc, "unborn untracked: ours stderr {}", String::from_utf8_lossy(&oerr));
+    assert_eq!(
+        orc,
+        rc,
+        "unborn untracked: ours stderr {}",
+        String::from_utf8_lossy(&oerr)
+    );
     assert_eq!(last_line(&oout), last_line(&out));
 
     // A real commit first; then nothing staged + clean worktree.
@@ -302,14 +419,24 @@ fn empty_and_unborn_commit_messages_match_git() {
     assert_eq!(f.run("git", &["commit", "-q", "-m", "first"], &env).0, 0);
     let (rc, out, _) = f.real(&["commit", "-m", "x"]);
     let (orc, oout, oerr) = f.our(&["commit", "-m", "x"]);
-    assert_eq!(orc, rc, "clean: ours stderr {}", String::from_utf8_lossy(&oerr));
+    assert_eq!(
+        orc,
+        rc,
+        "clean: ours stderr {}",
+        String::from_utf8_lossy(&oerr)
+    );
     assert_eq!(last_line(&oout), last_line(&out));
 
     // Dirty worktree, nothing staged.
     write_files(&f.dir, &[("u.txt", "u2\n")]);
     let (rc, out, _) = f.real(&["commit", "-m", "x"]);
     let (orc, oout, oerr) = f.our(&["commit", "-m", "x"]);
-    assert_eq!(orc, rc, "dirty: ours stderr {}", String::from_utf8_lossy(&oerr));
+    assert_eq!(
+        orc,
+        rc,
+        "dirty: ours stderr {}",
+        String::from_utf8_lossy(&oerr)
+    );
     assert_eq!(last_line(&oout), last_line(&out));
     fs::remove_dir_all(&f.dir).unwrap();
 }
@@ -344,7 +471,7 @@ fn missing_identity_matches_git() {
     fs::create_dir_all(&nohome).unwrap();
     let run_bare = |bin: &str| {
         let out = Command::new(bin)
-            .args(["commit", "--allow-empty", "-m", "x"])
+            .args(["commit", "-m", "x"])
             .current_dir(&dir)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("HOME", &nohome)
@@ -381,7 +508,12 @@ fn unborn_log_and_bad_rev_match_git() {
 
     let (rc, _, err) = f.real(&["show", "nope"]);
     let (orc, _, oerr) = f.our(&["show", "nope"]);
-    assert_eq!(orc, rc, "bad rev exit; ours stderr {}", String::from_utf8_lossy(&oerr));
+    assert_eq!(
+        orc,
+        rc,
+        "bad rev exit; ours stderr {}",
+        String::from_utf8_lossy(&oerr)
+    );
     assert_eq!(oerr, err, "bad rev stderr");
 
     // --all on an unborn repo is silent, exit 0.

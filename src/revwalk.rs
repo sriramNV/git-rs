@@ -70,7 +70,7 @@ impl Revwalk {
 
     /// Pop the next commit in committer-date order, or `None` when the walk
     /// is exhausted or the `-n` limit is reached.
-    pub fn next(&mut self) -> Result<Option<[u8; 20]>> {
+    pub fn pop_next(&mut self) -> Result<Option<[u8; 20]>> {
         if self.limit == Some(0) {
             return Ok(None);
         }
@@ -98,11 +98,7 @@ impl Revwalk {
 /// Resolve a revision name to a commit sha: a full 40-hex name, `HEAD`, a
 /// fully qualified ref, or `refs/heads/<name>` / `refs/tags/<name>`.
 /// Tags peel to their commit. Returns `None` when nothing resolves.
-pub fn resolve_rev(
-    refs: &Refs,
-    store: &ObjectStore,
-    name: &str,
-) -> Result<Option<[u8; 20]>> {
+pub fn resolve_rev(refs: &Refs, store: &ObjectStore, name: &str) -> Result<Option<[u8; 20]>> {
     if name.len() == 40 && name.bytes().all(|b| b.is_ascii_hexdigit()) {
         return match store.read_object(name) {
             Ok(_) => Ok(Some(parse_oid(name)?)),
@@ -121,11 +117,11 @@ pub fn resolve_rev(
     };
     let mut peeled = None;
     for c in &candidates {
-        if let Some(sha) = refs.resolve(c)? {
-            if let Some(oid) = peel_to_commit(store, &sha)? {
-                peeled = Some(oid);
-                break;
-            }
+        if let Some(sha) = refs.resolve(c)?
+            && let Some(oid) = peel_to_commit(store, &sha)?
+        {
+            peeled = Some(oid);
+            break;
         }
     }
     Ok(peeled)
@@ -169,9 +165,7 @@ pub fn object_name_error(rev: &str) -> GitError {
 /// any commits yet` (exit 128). `<branch>` is the symref target minus the
 /// `refs/heads/` prefix; a non-symref HEAD reports `HEAD`.
 pub fn unborn_fatal(refs: &Refs) -> GitError {
-    let branch = refs
-        .head_branch()
-        .unwrap_or_else(|| "HEAD".to_string());
+    let branch = refs.head_branch().unwrap_or_else(|| "HEAD".to_string());
     GitError::Fatal(format!(
         "your current branch '{branch}' does not have any commits yet"
     ))

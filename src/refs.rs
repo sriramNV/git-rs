@@ -354,9 +354,7 @@ impl Refs {
     pub fn head_branch(&self) -> Option<String> {
         let content = fs::read_to_string(self.git_dir.join("HEAD")).ok()?;
         let target = symref_target(content.trim())?;
-        target
-            .strip_prefix("refs/heads/")
-            .map(|b| b.to_string())
+        target.strip_prefix("refs/heads/").map(|b| b.to_string())
     }
 }
 

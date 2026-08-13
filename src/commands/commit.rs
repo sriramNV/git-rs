@@ -20,8 +20,8 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::error::{GitError, Result};
 use crate::index::{Index, IndexEntry};
-use crate::object::tree::{Tree, TreeEntry};
 use crate::object::Commit;
+use crate::object::tree::{Tree, TreeEntry};
 use crate::refs::Refs;
 use crate::store::{Kind, ObjectStore};
 use crate::worktree::{abs_git_dir, hash_entry, index_path, repo_root, walk_worktree};
@@ -36,18 +36,16 @@ pub fn run_commit(args: &[String]) -> Result<()> {
             "-m" | "--message" => {
                 i += 1;
                 let Some(msg) = args.get(i) else {
-                    return Err(GitError::Invalid(format!(
-                        "commit: option '-m' requires a message"
-                    )));
+                    return Err(GitError::Invalid(
+                        "commit: option '-m' requires a message".into(),
+                    ));
                 };
                 messages.push(msg.clone());
             }
             "-a" | "--all" => all = true,
             "-q" | "--quiet" => {}
             s if s.starts_with('-') => {
-                return Err(GitError::Invalid(format!(
-                    "commit: unknown option '{s}'"
-                )));
+                return Err(GitError::Invalid(format!("commit: unknown option '{s}'")));
             }
             s => {
                 return Err(GitError::Invalid(format!(
@@ -63,13 +61,7 @@ pub fn run_commit(args: &[String]) -> Result<()> {
         ));
     }
 
-    let message = clean_message(&messages);
-    if message.is_empty() {
-        // stderr, exit 1 — matches `git commit -m ""` (probed).
-        return Err(GitError::Invalid(
-            "Aborting commit due to empty commit message.".into(),
-        ));
-    }
+    let message_clean = clean_message(&messages);
 
     let refs = Refs::discover()?;
     let git_dir = abs_git_dir(refs.git_dir())?;
@@ -146,10 +138,21 @@ pub fn run_commit(args: &[String]) -> Result<()> {
         return Err(GitError::Invalid(String::new()));
     }
 
+    let message = if message_clean.is_empty() {
+        // stderr, exit 1 — but only after the nothing-to-commit checks
+        // (probed: git reports an empty index before an empty message).
+        return Err(GitError::Invalid(
+            "Aborting commit due to empty commit message.".into(),
+        ));
+    } else {
+        message_clean
+    };
+
     let (author_ts, author_tz) = commit_dates("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE")?;
     let (committer_ts, committer_tz) = commit_dates("GIT_COMMITTER_DATE", "GIT_AUTHOR_DATE")?;
     let author = crate::object::Ident::new(author.0, author.1, author_ts, author_tz)?;
-    let committer = crate::object::Ident::new(committer.0, committer.1, committer_ts, committer_tz)?;
+    let committer =
+        crate::object::Ident::new(committer.0, committer.1, committer_ts, committer_tz)?;
 
     let parents: Vec<[u8; 20]> = match &head {
         Some(h) => vec![hex_to_oid(h)?],
@@ -188,7 +191,12 @@ pub(crate) fn clean_message(messages: &[String]) -> String {
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
-    lines.join("\n")
+    let msg = lines.join("\n");
+    if msg.is_empty() {
+        msg
+    } else {
+        format!("{msg}\n")
+    }
 }
 
 /// Resolve name/email for an identity slot, applying git's fallbacks:
@@ -205,11 +213,8 @@ fn resolve_identity(
     let name = env_name.or(cfg_name);
     let email = env_email.or(cfg_email);
     let Some(email) = email else {
-        let guess = format!(
-            "{}@{}.none",
-            os_username(),
-            env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
-        );
+        let host = env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string());
+        let guess = format!("{}@{}. (none)", os_username(), host).replace(". ", ".");
         eprintln!(
             "{who} identity unknown\n\
              \n\
@@ -217,8 +222,8 @@ fn resolve_identity(
              \n\
              Run\n\
              \n\
-               git config --global user.email \"you@example.com\"\n\
-               git config --global user.name \"Your Name\"\n\
+             \x20\x20git config --global user.email \"you@example.com\"\n\
+             \x20\x20git config --global user.name \"Your Name\"\n\
              \n\
              to set your account's default identity.\n\
              Omit --global to set the identity only in this repository.\n"
@@ -398,16 +403,13 @@ fn head_tree(store: &ObjectStore, sha: &str) -> Result<Option<String>> {
 /// content) — the difference between "working tree clean" and "no changes
 /// added to commit".
 fn worktree_dirty(root: &Path, store: &ObjectStore, entries: &[IndexEntry]) -> bool {
-    entries
-        .iter()
-        .filter(|e| e.stage() == 0)
-        .any(|e| {
-            let abs = root.join(rel_os_path(&e.path));
-            match hash_entry(store, &abs, false) {
-                Ok(h) => h != e.oid,
-                Err(_) => true,
-            }
-        })
+    entries.iter().filter(|e| e.stage() == 0).any(|e| {
+        let abs = root.join(rel_os_path(&e.path));
+        match hash_entry(store, &abs, false) {
+            Ok(h) => h != e.oid,
+            Err(_) => true,
+        }
+    })
 }
 
 fn rel_os_path(rel: &[u8]) -> PathBuf {
@@ -434,33 +436,30 @@ mod tests {
 
     #[test]
     fn clean_message_strips_trailing_whitespace_per_line() {
-        assert_eq!(clean_message(&["title line   ".into()]), "title line");
+        assert_eq!(clean_message(&["title line   ".into()]), "title line\n");
         assert_eq!(
             clean_message(&[" body with trailing ws   ".into()]),
-            " body with trailing ws"
+            " body with trailing ws\n"
         );
-        assert_eq!(clean_message(&["a\tb \t".into()]), "a\tb");
+        assert_eq!(clean_message(&["a\tb \t".into()]), "a\tb\n");
     }
 
     #[test]
     fn clean_message_joins_with_single_newline() {
-        assert_eq!(
-            clean_message(&["one".into(), "two".into()]),
-            "one\ntwo"
-        );
+        assert_eq!(clean_message(&["one".into(), "two".into()]), "one\ntwo\n");
         assert_eq!(
             clean_message(&["one".into(), "".into(), "two".into()]),
-            "one\n\ntwo"
+            "one\n\ntwo\n"
         );
     }
 
     #[test]
     fn clean_message_drops_trailing_blank_lines_only() {
-        assert_eq!(clean_message(&["a\n\n".into()]), "a");
-        assert_eq!(clean_message(&["a\n\nb\n".into()]), "a\n\nb");
+        assert_eq!(clean_message(&["a\n\n".into()]), "a\n");
+        assert_eq!(clean_message(&["a\n\nb\n".into()]), "a\n\nb\n");
         // Internal blank lines survive verbatim, including ones that fall
         // between -m messages (git's stripspace keeps them).
-        assert_eq!(clean_message(&["a\n\n".into(), "b".into()]), "a\n\n\nb");
+        assert_eq!(clean_message(&["a\n\n".into(), "b".into()]), "a\n\n\nb\n");
         assert_eq!(clean_message(&["\n\n".into()]), "");
         assert_eq!(clean_message(&["".into()]), "");
         assert_eq!(clean_message(&["   ".into()]), "");
@@ -468,11 +467,14 @@ mod tests {
 
     #[test]
     fn clean_message_keeps_leading_whitespace_and_internal_blanks() {
-        assert_eq!(clean_message(&["  # not a comment\n\nbody".into()]), "  # not a comment\n\nbody");
+        assert_eq!(
+            clean_message(&["  # not a comment\n\nbody".into()]),
+            "  # not a comment\n\nbody\n"
+        );
         // Empty paragraph in the middle survives as a blank line.
         assert_eq!(
             clean_message(&["title".into(), "".into(), "final".into()]),
-            "title\n\nfinal"
+            "title\n\nfinal\n"
         );
     }
 
