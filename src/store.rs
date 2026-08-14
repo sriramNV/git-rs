@@ -136,9 +136,22 @@ impl ObjectStore {
             .parent()
             .ok_or_else(|| GitError::Invalid(format!("object path {id} has no parent")))?;
         fs::create_dir_all(dir).context(dir, "create object directory")?;
-        let tmp = dir.join(format!(".tmp-{}", std::process::id()));
+        // tmp name includes the id so concurrent writers of different objects
+        // to the same store never share a temp file (rename races).
+        let tmp = dir.join(format!(".tmp-{}-{id}", std::process::id()));
         fs::write(&tmp, &compressed).context(&tmp, "write object")?;
-        fs::rename(&tmp, &path).context(&path, "commit object")?;
+        if let Err(e) = fs::rename(&tmp, &path) {
+            // A concurrent writer may have already committed the same object;
+            // a vanished tmp with the object present is success.
+            if path.exists() && !tmp.exists() {
+                return Ok(id);
+            }
+            return Err(crate::error::GitError::io(
+                path.display().to_string(),
+                "commit object",
+                e,
+            ));
+        }
         Ok(id)
     }
 

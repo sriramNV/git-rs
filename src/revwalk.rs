@@ -106,14 +106,39 @@ pub fn resolve_rev(refs: &Refs, store: &ObjectStore, name: &str) -> Result<Optio
             Err(e) => Err(e),
         };
     }
+    // `HEAD~N` / `<rev>~N`: Nth parent (first-parent walk). Nested ~ works
+    // via recursion; walking past the root yields None (git: ambiguous
+    // argument).
+    if let Some((base, n_str)) = name.split_once('~') {
+        let n: usize = n_str
+            .parse()
+            .map_err(|_| GitError::Invalid(format!("revision '{name}' does not exist")))?;
+        let mut sha = match resolve_rev(refs, store, base)? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        for _ in 0..n {
+            let (kind, content) = store.read_object(&hex(&sha))?;
+            if kind != Kind::Commit {
+                return Ok(None);
+            }
+            let commit = Commit::parse(&content)?;
+            match commit.parents.first() {
+                Some(p) => sha = *p,
+                None => return Ok(None),
+            }
+        }
+        return Ok(Some(sha));
+    }
     let candidates: Vec<String> = if name.starts_with("refs/") {
         vec![name.to_string()]
     } else {
-        vec![
-            "HEAD".to_string(),
-            format!("refs/heads/{name}"),
-            format!("refs/tags/{name}"),
-        ]
+        match name {
+            // Only literal HEAD/@ resolve to HEAD; arbitrary names must NOT
+            // fall back to HEAD (git: unknown revision / pathspec error).
+            "HEAD" | "@" => vec!["HEAD".to_string()],
+            _ => vec![format!("refs/heads/{name}"), format!("refs/tags/{name}")],
+        }
     };
     let mut peeled = None;
     for c in &candidates {
@@ -129,7 +154,7 @@ pub fn resolve_rev(refs: &Refs, store: &ObjectStore, name: &str) -> Result<Optio
 
 /// Follow a ref value until it names a commit (tags peel; anything else is
 /// `None` — the ref exists but is not a commit).
-fn peel_to_commit(store: &ObjectStore, sha: &str) -> Result<Option<[u8; 20]>> {
+pub fn peel_to_commit(store: &ObjectStore, sha: &str) -> Result<Option<[u8; 20]>> {
     let mut current = sha.to_string();
     for _ in 0..10 {
         let oid = parse_oid(&current)?;
@@ -148,6 +173,43 @@ fn peel_to_commit(store: &ObjectStore, sha: &str) -> Result<Option<[u8; 20]>> {
         }
     }
     Err(GitError::Corrupt(format!("tag chain too deep at '{sha}'")))
+}
+
+/// Best common ancestor of two commits, or `None` when the histories do not
+/// share a root (unreachable from one another). Two-pass walk: mark every
+/// ancestor of `a`, then walk `b`'s ancestry until a marked commit appears.
+/// With multiple merge bases the first hit is returned (git's tie-break is
+/// richer; v1 callers only test ancestry, where any hit is correct).
+pub fn merge_base(store: &ObjectStore, a: [u8; 20], b: [u8; 20]) -> Result<Option<[u8; 20]>> {
+    if a == b {
+        return Ok(Some(a));
+    }
+    let mut marked: HashSet<[u8; 20]> = HashSet::new();
+    let mut frontier: Vec<[u8; 20]> = vec![a];
+    while let Some(sha) = frontier.pop() {
+        if !marked.insert(sha) {
+            continue;
+        }
+        let parents = commit_parents(store, sha)?;
+        frontier.extend(parents);
+    }
+    frontier = vec![b];
+    while let Some(sha) = frontier.pop() {
+        if marked.contains(&sha) {
+            return Ok(Some(sha));
+        }
+        frontier.extend(commit_parents(store, sha)?);
+    }
+    Ok(None)
+}
+
+/// Parent oids of a commit (the empty list for root commits).
+fn commit_parents(store: &ObjectStore, sha: [u8; 20]) -> Result<Vec<[u8; 20]>> {
+    let (kind, content) = store.read_object(&hex(&sha))?;
+    match kind {
+        Kind::Commit => Ok(Commit::parse(&content)?.parents),
+        _ => Err(GitError::Corrupt(format!("{} is not a commit", hex(&sha)))),
+    }
 }
 
 /// Git's `ambiguous argument` error block (exit 128). v1 checks revisions
@@ -188,6 +250,9 @@ pub fn hex(oid: &[u8; 20]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     fn short_oid(first: u8) -> [u8; 20] {
         let mut o = [0u8; 20];
@@ -228,5 +293,69 @@ mod tests {
             "fatal: ambiguous argument 'nope': unknown revision or path not in the working tree."
         ));
         assert!(format!("{err}").contains("Use '--' to separate paths"));
+    }
+
+    fn write_commit(store: &ObjectStore, parents: &[[u8; 20]], first_byte: u8) -> [u8; 20] {
+        let mut tree = [0u8; 20];
+        tree[0] = first_byte;
+        let commit = crate::object::Commit {
+            tree,
+            parents: parents.to_vec(),
+            author: crate::object::Ident::new("A", "a@b", 1, 0).unwrap(),
+            committer: crate::object::Ident::new("A", "a@b", 1, 0).unwrap(),
+            message: vec![b'm'],
+        };
+        parse_oid(
+            &store
+                .write_object(Kind::Commit, &commit.serialize().unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn merge_base_direct_ancestor() {
+        let store = ObjectStore::new(temp_dir());
+        let root = write_commit(&store, &[], 1);
+        let child = write_commit(&store, &[root], 2);
+        let grand = write_commit(&store, &[child], 3);
+        assert_eq!(merge_base(&store, root, grand).unwrap(), Some(root));
+        assert_eq!(merge_base(&store, child, grand).unwrap(), Some(child));
+        assert_eq!(merge_base(&store, grand, child).unwrap(), Some(child));
+    }
+
+    #[test]
+    fn merge_base_divergent_branches() {
+        let store = ObjectStore::new(temp_dir());
+        let root = write_commit(&store, &[], 1);
+        let left = write_commit(&store, &[root], 2);
+        let right = write_commit(&store, &[root], 3);
+        assert_eq!(merge_base(&store, left, right).unwrap(), Some(root));
+        assert_eq!(merge_base(&store, right, left).unwrap(), Some(root));
+    }
+
+    #[test]
+    fn merge_base_same_commit() {
+        let store = ObjectStore::new(temp_dir());
+        let root = write_commit(&store, &[], 1);
+        assert_eq!(merge_base(&store, root, root).unwrap(), Some(root));
+    }
+
+    #[test]
+    fn merge_base_disconnected_returns_none() {
+        let store = ObjectStore::new(temp_dir());
+        let a = write_commit(&store, &[], 1);
+        let b = write_commit(&store, &[], 2);
+        assert_eq!(merge_base(&store, a, b).unwrap(), None);
+    }
+
+    fn temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gitrs-revwalk-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

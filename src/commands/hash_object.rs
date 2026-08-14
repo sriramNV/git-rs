@@ -118,7 +118,31 @@ pub fn run_cat_file(args: &[String]) -> Result<()> {
     })?;
 
     let store = ObjectStore::discover()?;
-    let (kind, content) = store.read_object(id)?;
+    // Accept ref names too (`git cat-file -p <tag>`): try a raw object
+    // first, then refs/tags/, refs/heads/, bare refs/. Never peel.
+    let id = match store.read_object(id) {
+        Ok(_) => id.to_string(),
+        Err(GitError::NotFound(_)) => {
+            let refs = Refs::discover()?;
+            let mut found = None;
+            for candidate in [
+                format!("refs/tags/{id}"),
+                format!("refs/heads/{id}"),
+                format!("refs/{id}"),
+            ] {
+                if let Some(sha) = refs.resolve(&candidate)? {
+                    found = Some(sha);
+                    break;
+                }
+            }
+            match found {
+                Some(sha) => sha,
+                None => return Err(GitError::NotFound(format!("Not a valid object name {id}"))),
+            }
+        }
+        Err(e) => return Err(e),
+    };
+    let (kind, content) = store.read_object(&id)?;
 
     if want_type {
         println!("{}", kind.as_str());

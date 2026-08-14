@@ -244,7 +244,8 @@ fn os_username() -> String {
 
 /// Author date: `GIT_AUTHOR_DATE`, else `GIT_COMMITTER_DATE`, else now.
 /// Committer date: `GIT_COMMITTER_DATE`, else `GIT_AUTHOR_DATE`, else now.
-fn commit_dates(primary: &str, fallback: &str) -> Result<(i64, i32)> {
+/// (Also used by `tag -a` for the tagger date.)
+pub(crate) fn commit_dates(primary: &str, fallback: &str) -> Result<(i64, i32)> {
     for var in [primary, fallback] {
         if let Ok(raw) = env::var(var) {
             return parse_date(&raw);

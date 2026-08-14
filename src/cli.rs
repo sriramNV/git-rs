@@ -4,12 +4,16 @@
 //! argument handling keeps behavior predictable and dependency-free.
 
 use crate::commands::add::run_add;
+use crate::commands::branch::run_branch;
+use crate::commands::checkout::run_checkout;
 use crate::commands::commit::run_commit;
 use crate::commands::diff::run_diff;
 use crate::commands::hash_object::{run_cat_file, run_hash_object, run_update_ref};
 use crate::commands::log::run_log;
+use crate::commands::reset::run_reset;
 use crate::commands::show::run_show;
 use crate::commands::status::run_status;
+use crate::commands::tag::run_tag;
 use crate::error::{GitError, Result};
 
 /// A registered subcommand.
@@ -85,6 +89,30 @@ pub static COMMANDS: &[Command] = &[
         usage: "git-rs show [<rev>]",
         help: "show a commit's header and change summary",
         run: run_show,
+    },
+    Command {
+        name: "branch",
+        usage: "git-rs branch [<name>] [-a] [-d] [-D]",
+        help: "list, create, or delete branches",
+        run: run_branch,
+    },
+    Command {
+        name: "tag",
+        usage: "git-rs tag [<name>] [-a] [-m <msg>] [-l] [-d]",
+        help: "create, list, or delete tags",
+        run: run_tag,
+    },
+    Command {
+        name: "checkout",
+        usage: "git-rs checkout [-b <name>] [-f] [-q] <branch|tag|sha>",
+        help: "switch branches or restore working tree files",
+        run: run_checkout,
+    },
+    Command {
+        name: "reset",
+        usage: "git-rs reset [--soft|--mixed|--hard] [<commit>]",
+        help: "reset current HEAD to the specified state",
+        run: run_reset,
     },
 ];
 

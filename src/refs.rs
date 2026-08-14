@@ -292,7 +292,9 @@ impl Refs {
         file.sync_all().context(&tmp, "fsync temp ref")?;
         fs::rename(&tmp, &target).context(&target, "commit ref update")?;
 
-        self.append_reflog(name, &old_sha, &new_sha, message)?;
+        if !name.starts_with("refs/tags/") {
+            self.append_reflog(name, &old_sha, &new_sha, message)?;
+        }
         Ok(())
     }
 
@@ -346,6 +348,40 @@ impl Refs {
             .context(&path, "open reflog")?;
         f.write_all(line.as_bytes())
             .context(&path, "append reflog")?;
+        Ok(())
+    }
+
+    /// Delete a ref: remove the ref file and its reflog file.
+    pub fn delete(&self, name: &str) -> Result<()> {
+        Self::validate_name(name).map_err(|_| {
+            GitError::Fatal(format!("refusing to delete ref with bad name '{name}'"))
+        })?;
+        let target = self.writable_target(name)?;
+        if target.exists() {
+            fs::remove_file(&target).context(&target, "delete ref")?;
+        }
+        let log_path = self.git_dir.join("logs").join(name);
+        if log_path.exists() {
+            fs::remove_file(&log_path).context(&log_path, "delete reflog")?;
+        }
+        Ok(())
+    }
+
+    /// Switch HEAD to a branch (write symref `ref: refs/heads/<branch>`).
+    /// Appends a reflog entry to `logs/HEAD` with `message`.
+    pub fn set_head_symref(&self, branch: &str, message: &str) -> Result<()> {
+        let old_sha = self.resolve("HEAD")?.unwrap_or(ZERO_SHA.to_string());
+        let content = format!("ref: refs/heads/{branch}\n");
+        let target = self.git_dir.join("HEAD");
+        let dir = target.parent().unwrap();
+        let tmp = dir.join(format!(".tmp-head-{}", std::process::id()));
+        fs::create_dir_all(dir).context(dir, "create head dir")?;
+        let mut f = fs::File::create(&tmp).context(&tmp, "create temp head")?;
+        f.write_all(content.as_bytes())
+            .context(&tmp, "write temp head")?;
+        f.sync_all().context(&tmp, "fsync temp head")?;
+        fs::rename(&tmp, &target).context(&target, "commit head")?;
+        self.append_reflog("HEAD", &old_sha, &old_sha, message)?;
         Ok(())
     }
 
