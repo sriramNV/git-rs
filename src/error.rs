@@ -19,6 +19,9 @@ pub enum GitError {
     Corrupt(String),
     /// Invalid user input: bad arguments, bad ref names, bad config values.
     Invalid(String),
+    /// A command failure with a non-fatal exit code other than 1 (e.g. git
+    /// merge's dirty-tree refusal exits 2). Printed bare, like `Invalid`.
+    Failure(String),
     /// A user-input or command failure real git reports as a fatal error
     /// (exit 128), e.g. ref update failures.
     Fatal(String),
@@ -50,6 +53,7 @@ impl fmt::Display for GitError {
             GitError::NotFound(msg) => write!(f, "{msg}"),
             GitError::Corrupt(msg) => write!(f, "{msg}"),
             GitError::Invalid(msg) => write!(f, "{msg}"),
+            GitError::Failure(msg) => write!(f, "{msg}"),
             GitError::Fatal(msg) => write!(f, "{msg}"),
             GitError::Io { path, op, source } => write!(f, "{op} failed for '{path}': {source}"),
         }

@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::error::{GitError, Result};
+use crate::error::{GitError, IoContext, Result};
 use crate::index::{Index, IndexEntry};
 use crate::object::Commit;
 use crate::object::tree::{Tree, TreeEntry};
@@ -55,14 +55,6 @@ pub fn run_commit(args: &[String]) -> Result<()> {
         }
         i += 1;
     }
-    if messages.is_empty() {
-        return Err(GitError::Invalid(
-            "commit: no message given; use -m (editor not implemented in v1)".into(),
-        ));
-    }
-
-    let message_clean = clean_message(&messages);
-
     let refs = Refs::discover()?;
     let git_dir = abs_git_dir(refs.git_dir())?;
     let root = repo_root(&git_dir)?;
@@ -73,11 +65,152 @@ pub fn run_commit(args: &[String]) -> Result<()> {
         Index::new()
     };
     let store = ObjectStore::discover()?;
-    let config = Config::load()?;
+    let merging = git_dir.join("MERGE_HEAD").exists();
+
+    // Unmerged index: refuse with git's block (probed, git 2.55 — the
+    // `U\t<file>` lines, one per path, go to stdout; the error block to
+    // stderr).
+    let mut unmerged: Vec<Vec<u8>> = Vec::new();
+    for e in idx.entries() {
+        if e.stage() != 0 && !unmerged.contains(&e.path) {
+            unmerged.push(e.path.clone());
+        }
+    }
+    if !unmerged.is_empty() {
+        for path in &unmerged {
+            println!("U\t{}", String::from_utf8_lossy(path));
+        }
+        eprintln!(
+            "error: Committing is not possible because you have unmerged files.\n\
+             hint: Fix them up in the work tree, and then use 'git add/rm <file>'\n\
+             hint: as appropriate to mark resolution and make a commit.\n\
+             fatal: Exiting because of an unresolved conflict."
+        );
+        return Err(GitError::Fatal(String::new()));
+    }
+
+    // Message: -m wins; during a merge the default comes from MERGE_MSG.
+    if messages.is_empty() && merging {
+        messages.push(merge_msg_message(&git_dir)?);
+    }
+    if messages.is_empty() {
+        return Err(GitError::Invalid(
+            "commit: no message given; use -m (editor not implemented in v1)".into(),
+        ));
+    }
+    let message_clean = clean_message(&messages);
 
     // Identity: env > config, git's fallback chain (probed). A missing
     // name falls back to the OS username; a missing email is fatal with
     // git's hint block and the auto-detect guess.
+    let (author, committer) = commit_identities()?;
+
+    if all {
+        restage_all(&root, &store, &mut idx, &ipath)?;
+    }
+
+    let tree = tree_from_index(&store, idx.entries())?;
+    let head = refs.resolve("HEAD")?;
+
+    // Empty-commit checks (probed messages; git prints a status block
+    // first, v1 prints only the final line — D-015). Skipped during a
+    // merge: committing the merge with an unchanged tree is allowed.
+    if !merging {
+        if let Some(h) = &head {
+            if head_tree(&store, h)? == Some(tree.clone()) {
+                let dirty = worktree_dirty(&root, &store, idx.entries());
+                let msg = if !all && dirty {
+                    "no changes added to commit (use \"git add\" and/or \"git commit -a\")"
+                } else {
+                    "nothing to commit, working tree clean"
+                };
+                println!("{msg}");
+                return Err(GitError::Invalid(String::new()));
+            }
+        } else if idx.entries().iter().all(|e| e.stage() != 0) {
+            // Unborn HEAD with nothing staged: distinguish untracked files
+            // present (probed: different message).
+            let matcher = crate::ignore::IgnoreMatcher::load(&root, &git_dir)?;
+            let items = walk_worktree(&root, &git_dir, &matcher)?;
+            let untracked = items.iter().any(|it| {
+                !it.is_dir
+                    && !idx.entries().iter().any(|e| e.path == it.path)
+                    && !matcher.is_ignored(&it.path, false)
+            });
+            let msg = if untracked {
+                "nothing added to commit but untracked files present (use \"git add\" to track)"
+            } else {
+                "nothing to commit (create/copy files and use \"git add\" to track)"
+            };
+            println!("{msg}");
+            return Err(GitError::Invalid(String::new()));
+        }
+    }
+
+    let message = if message_clean.is_empty() {
+        // stderr, exit 1 — but only after the nothing-to-commit checks
+        // (probed: git reports an empty index before an empty message).
+        return Err(GitError::Invalid(
+            "Aborting commit due to empty commit message.".into(),
+        ));
+    } else {
+        message_clean
+    };
+
+    let mut parents: Vec<[u8; 20]> = match &head {
+        Some(h) => vec![hex_to_oid(h)?],
+        None => Vec::new(),
+    };
+    if merging {
+        let merge_head_path = git_dir.join("MERGE_HEAD");
+        let merge_head =
+            fs::read_to_string(&merge_head_path).context(&merge_head_path, "read MERGE_HEAD")?;
+        parents.push(hex_to_oid(merge_head.trim())?);
+    }
+    let id = write_commit(&store, &author, &committer, &tree, parents, &message)?;
+
+    let subject = message.split('\n').next().unwrap_or("");
+    let reflog = if merging {
+        format!("commit (merge): {subject}")
+    } else if head.is_none() {
+        format!("commit (initial): {subject}")
+    } else {
+        format!("commit: {subject}")
+    };
+    refs.update("HEAD", &id, &reflog)?;
+
+    // A merge commit ends the in-progress merge (git deletes the state
+    // files on success; ORIG_HEAD is kept).
+    if merging {
+        remove_merge_state(&git_dir);
+    }
+    Ok(())
+}
+
+/// Read MERGE_MSG as the default commit message during a merge: comment
+/// lines (`#`) stripped first, then the default cleanup (probed). -m
+/// overrides this entirely.
+fn merge_msg_message(git_dir: &Path) -> Result<String> {
+    let path = git_dir.join("MERGE_MSG");
+    let raw = fs::read_to_string(&path).context(&path, "read MERGE_MSG")?;
+    let msg = raw
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(clean_message(&[msg]))
+}
+
+fn remove_merge_state(git_dir: &Path) {
+    let _ = fs::remove_file(git_dir.join("MERGE_HEAD"));
+    let _ = fs::remove_file(git_dir.join("MERGE_MSG"));
+}
+
+/// Author and committer identities with dates, via git's env/config
+/// chains (shared by `commit` and `merge`).
+pub(crate) fn commit_identities() -> Result<(crate::object::Ident, crate::object::Ident)> {
+    let config = Config::load()?;
+    // Author: env > config (missing email is fatal with git's hint block).
     let author = resolve_identity(
         env::var("GIT_AUTHOR_NAME").ok(),
         env::var("GIT_AUTHOR_EMAIL").ok(),
@@ -98,84 +231,33 @@ pub fn run_commit(args: &[String]) -> Result<()> {
             .or_else(|| config.get("user", "email").map(String::from)),
         "Committer",
     )?;
-
-    if all {
-        restage_all(&root, &store, &mut idx, &ipath)?;
-    }
-
-    let tree = tree_from_index(&store, idx.entries())?;
-    let head = refs.resolve("HEAD")?;
-
-    // Empty-commit checks (probed messages; git prints a status block
-    // first, v1 prints only the final line — D-015).
-    if let Some(h) = &head {
-        if head_tree(&store, h)? == Some(tree.clone()) {
-            let dirty = worktree_dirty(&root, &store, idx.entries());
-            let msg = if !all && dirty {
-                "no changes added to commit (use \"git add\" and/or \"git commit -a\")"
-            } else {
-                "nothing to commit, working tree clean"
-            };
-            println!("{msg}");
-            return Err(GitError::Invalid(String::new()));
-        }
-    } else if idx.entries().iter().all(|e| e.stage() != 0) {
-        // Unborn HEAD with nothing staged: distinguish untracked files
-        // present (probed: different message).
-        let matcher = crate::ignore::IgnoreMatcher::load(&root, &git_dir)?;
-        let items = walk_worktree(&root, &git_dir, &matcher)?;
-        let untracked = items.iter().any(|it| {
-            !it.is_dir
-                && !idx.entries().iter().any(|e| e.path == it.path)
-                && !matcher.is_ignored(&it.path, false)
-        });
-        let msg = if untracked {
-            "nothing added to commit but untracked files present (use \"git add\" to track)"
-        } else {
-            "nothing to commit (create/copy files and use \"git add\" to track)"
-        };
-        println!("{msg}");
-        return Err(GitError::Invalid(String::new()));
-    }
-
-    let message = if message_clean.is_empty() {
-        // stderr, exit 1 — but only after the nothing-to-commit checks
-        // (probed: git reports an empty index before an empty message).
-        return Err(GitError::Invalid(
-            "Aborting commit due to empty commit message.".into(),
-        ));
-    } else {
-        message_clean
-    };
-
     let (author_ts, author_tz) = commit_dates("GIT_AUTHOR_DATE", "GIT_COMMITTER_DATE")?;
     let (committer_ts, committer_tz) = commit_dates("GIT_COMMITTER_DATE", "GIT_AUTHOR_DATE")?;
     let author = crate::object::Ident::new(author.0, author.1, author_ts, author_tz)?;
     let committer =
         crate::object::Ident::new(committer.0, committer.1, committer_ts, committer_tz)?;
+    Ok((author, committer))
+}
 
-    let parents: Vec<[u8; 20]> = match &head {
-        Some(h) => vec![hex_to_oid(h)?],
-        None => Vec::new(),
-    };
+/// Build and write a commit object, returning its sha (shared by `commit`
+/// and `merge`).
+pub(crate) fn write_commit(
+    store: &ObjectStore,
+    author: &crate::object::Ident,
+    committer: &crate::object::Ident,
+    tree: &str,
+    parents: Vec<[u8; 20]>,
+    message: &str,
+) -> Result<String> {
     let commit = Commit {
-        tree: hex_to_oid(&tree)?,
+        tree: hex_to_oid(tree)?,
         parents,
-        author,
-        committer,
+        author: author.clone(),
+        committer: committer.clone(),
         message: message.as_bytes().to_vec(),
     };
     let bytes = commit.serialize()?;
-    let id = store.write_object(Kind::Commit, &bytes)?;
-
-    let subject = message.split('\n').next().unwrap_or("");
-    let reflog = if head.is_none() {
-        format!("commit (initial): {subject}")
-    } else {
-        format!("commit: {subject}")
-    };
-    refs.update("HEAD", &id, &reflog)?;
-    Ok(())
+    store.write_object(Kind::Commit, &bytes)
 }
 
 /// Join `-m` messages with a single `\n` between them, then apply git's

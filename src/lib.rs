@@ -8,6 +8,7 @@ pub mod diff;
 pub mod error;
 pub mod ignore;
 pub mod index;
+pub mod merge;
 pub mod object;
 pub mod refs;
 pub mod revwalk;

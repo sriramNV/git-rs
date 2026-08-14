@@ -86,6 +86,21 @@ pub fn run_reset(args: &[String]) -> Result<()> {
             let sha_hex = hex(&target_sha);
             refs.update("HEAD", &sha_hex, &format!("reset: moving to {target_rev}"))?;
             crate::worktree::force_sync_worktree(&store, &root, old_tree.as_deref(), &target_tree)?;
+            // Git's hard reset also deletes files tracked in the current
+            // index but absent from the target tree (e.g. a merge's staged
+            // additions, or a staged new file).
+            let target_entries = tree_entries(&store, &target_tree)?;
+            let target: Vec<&[u8]> = target_entries
+                .iter()
+                .map(|(p, _, _)| p.as_slice())
+                .collect();
+            for e in idx.entries().iter().filter(|e| e.stage() == 0) {
+                if !target.contains(&e.path.as_slice()) {
+                    crate::worktree::remove_file_and_empty_dirs(
+                        &root.join(crate::worktree::rel_os_path(&e.path)),
+                    );
+                }
+            }
             rewrite_index(&store, &root, &mut idx, &target_tree)?;
             idx.write(&ipath)?;
 

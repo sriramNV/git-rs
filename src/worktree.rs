@@ -344,7 +344,9 @@ pub fn sync_worktree(
     Ok(())
 }
 
-fn remove_file_and_empty_dirs(abs: &Path) {
+/// Delete a file and prune emptied parent directories (used by `merge` and
+/// the sync helpers).
+pub(crate) fn remove_file_and_empty_dirs(abs: &Path) {
     let _ = fs::remove_file(abs);
     let mut dir = match abs.parent() {
         Some(d) => d.to_path_buf(),
@@ -363,7 +365,7 @@ fn remove_file_and_empty_dirs(abs: &Path) {
 
 /// Write one leaf from a tree: symlinks (mode 120000) become symlinks,
 /// everything else a regular file with the blob bytes.
-fn write_blob(
+pub(crate) fn write_blob(
     store: &ObjectStore,
     root: &Path,
     rel: &[u8],
