@@ -118,8 +118,85 @@ struct StatFile {
 }
 
 /// Print git's diffstat block: per-file lines plus the
-/// `N files changed, X insertions(+), Y deletions(-)` summary.
-fn print_stat(store: &ObjectStore, old_tree: Option<&str>, new_tree: &str) -> Result<()> {
+/// `N files changed, X insertions(+), Y deletions(-)` summary. Shared with
+/// rebase's `--continue` commit summary — git's commit prints only the
+/// summary line there (`stat_summary`), never the per-file lines.
+pub(crate) fn print_stat(
+    store: &ObjectStore,
+    old_tree: Option<&str>,
+    new_tree: &str,
+) -> Result<()> {
+    let stats = stat_files(store, old_tree, new_tree)?;
+    let width = stats.iter().map(|s| s.path.len()).max().unwrap_or(0);
+    for s in &stats {
+        let name = String::from_utf8_lossy(&s.path);
+        if s.binary {
+            println!(
+                " {name:<width$} | Bin {} -> {} bytes",
+                s.old_size, s.new_size
+            );
+        } else if s.ins + s.del > 0 {
+            let sym = format!(
+                "{}{}",
+                "+".repeat(s.ins as usize),
+                "-".repeat(s.del as usize)
+            );
+            println!(" {name:<width$} | {} {sym}", s.ins + s.del);
+        } else {
+            // Mode-only change: filename alone, no bar (git shows the name).
+            println!(" {name:<width$} | 0");
+        }
+    }
+    println!("{}", summary_line(&stats));
+    Ok(())
+}
+
+/// The `N files changed, X insertions(+), Y deletions(-)` summary line
+/// alone (git's `commit` prints exactly this when committing).
+pub(crate) fn stat_summary(
+    store: &ObjectStore,
+    old_tree: Option<&str>,
+    new_tree: &str,
+) -> Result<String> {
+    let stats = stat_files(store, old_tree, new_tree)?;
+    Ok(summary_line(&stats))
+}
+
+fn summary_line(stats: &[StatFile]) -> String {
+    let ins: u64 = stats.iter().map(|s| s.ins).sum();
+    let del: u64 = stats.iter().map(|s| s.del).sum();
+    let has_binary = stats.iter().any(|s| s.binary);
+    let files_txt = if stats.len() == 1 {
+        " 1 file changed".to_string()
+    } else {
+        format!(" {} files changed", stats.len())
+    };
+    let ins_txt = if ins == 1 {
+        "1 insertion(+)".to_string()
+    } else {
+        format!("{ins} insertions(+)")
+    };
+    let del_txt = if del == 1 {
+        "1 deletion(-)".to_string()
+    } else {
+        format!("{del} deletions(-)")
+    };
+    let mut summary = files_txt;
+    if ins > 0 || has_binary {
+        summary.push_str(&format!(", {ins_txt}"));
+    }
+    if del > 0 || has_binary {
+        summary.push_str(&format!(", {del_txt}"));
+    }
+    summary
+}
+
+/// Per-file diffstat data between two trees (unchanged blobs omitted).
+fn stat_files(
+    store: &ObjectStore,
+    old_tree: Option<&str>,
+    new_tree: &str,
+) -> Result<Vec<StatFile>> {
     let old = tree_blobs(store, old_tree)?;
     let new = tree_blobs(store, Some(new_tree))?;
 
@@ -189,56 +266,7 @@ fn print_stat(store: &ObjectStore, old_tree: Option<&str>, new_tree: &str) -> Re
         }
         stats.push(s);
     }
-
-    let width = stats.iter().map(|s| s.path.len()).max().unwrap_or(0);
-    let mut ins = 0u64;
-    let mut del = 0u64;
-    for s in &stats {
-        ins += s.ins;
-        del += s.del;
-        let name = String::from_utf8_lossy(&s.path);
-        if s.binary {
-            println!(
-                " {name:<width$} | Bin {} -> {} bytes",
-                s.old_size, s.new_size
-            );
-        } else if s.ins + s.del > 0 {
-            let sym = format!(
-                "{}{}",
-                "+".repeat(s.ins as usize),
-                "-".repeat(s.del as usize)
-            );
-            println!(" {name:<width$} | {} {sym}", s.ins + s.del);
-        } else {
-            // Mode-only change: filename alone, no bar (git shows the name).
-            println!(" {name:<width$} | 0");
-        }
-    }
-    let has_binary = stats.iter().any(|s| s.binary);
-    let files_txt = if stats.len() == 1 {
-        " 1 file changed".to_string()
-    } else {
-        format!(" {} files changed", stats.len())
-    };
-    let ins_txt = if ins == 1 {
-        "1 insertion(+)".to_string()
-    } else {
-        format!("{ins} insertions(+)")
-    };
-    let del_txt = if del == 1 {
-        "1 deletion(-)".to_string()
-    } else {
-        format!("{del} deletions(-)")
-    };
-    let mut summary = files_txt;
-    if ins > 0 || has_binary {
-        summary.push_str(&format!(", {ins_txt}"));
-    }
-    if del > 0 || has_binary {
-        summary.push_str(&format!(", {del_txt}"));
-    }
-    println!("{summary}");
-    Ok(())
+    Ok(stats)
 }
 
 /// Path → blob oid map for every blob under a tree (empty when no tree).

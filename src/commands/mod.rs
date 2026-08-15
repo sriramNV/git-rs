@@ -9,6 +9,7 @@ pub mod diff;
 pub mod hash_object;
 pub mod log;
 pub mod merge;
+pub mod rebase;
 pub mod reset;
 pub mod show;
 pub mod status;

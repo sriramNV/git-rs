@@ -277,11 +277,11 @@ fn checkout_detached(
     rewrite_index(store, root, idx, &new_tree)?;
     idx.write(ipath)?;
 
-    // Move HEAD to detached sha
+    // Move HEAD to detached sha (writes the raw sha into the HEAD file —
+    // never the branch ref).
     let sha_hex = hex(&commit_sha);
     let old_descr = old_head_descr(refs, old_commit_sha)?;
-    refs.update(
-        "HEAD",
+    refs.set_head_sha(
         &sha_hex,
         &format!("checkout: moving from {old_descr} to {sha_hex}"),
     )?;

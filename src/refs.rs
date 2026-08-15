@@ -367,6 +367,43 @@ impl Refs {
         Ok(())
     }
 
+    /// Update a ref to `new_sha` like `update`, but without a reflog entry
+    /// (rebase `--abort` restores the branch silently — probed: git adds no
+    /// reflog line on abort).
+    pub fn update_quiet(&self, name: &str, new_sha: &str) -> Result<()> {
+        let fail = |detail: String| {
+            GitError::Fatal(format!("update_ref failed for ref '{name}': {detail}"))
+        };
+        Self::validate_name(name)
+            .map_err(|_| fail(format!("refusing to update ref with bad name '{name}'")))?;
+        let new_sha = new_sha.to_ascii_lowercase();
+        if !is_sha(&new_sha) {
+            return Err(fail(format!(
+                "trying to write ref '{name}' with nonexistent object {new_sha}"
+            )));
+        }
+        let target = self.writable_target(name)?;
+        let store = crate::store::ObjectStore::new(self.git_dir.join("objects"));
+        if !store.object_path(&new_sha).exists() {
+            return Err(fail(format!(
+                "trying to write ref '{name}' with nonexistent object {new_sha}"
+            )));
+        }
+        let dir = target
+            .parent()
+            .ok_or_else(|| fail(format!("ref '{name}' has no parent directory")))?
+            .to_path_buf();
+        fs::create_dir_all(&dir).context(&dir, "create ref directory")?;
+        let tmp = dir.join(format!(".tmp-ref-{}", std::process::id()));
+        let mut file = fs::File::create(&tmp).context(&tmp, "create temp ref")?;
+        file.write_all(new_sha.as_bytes())
+            .context(&tmp, "write temp ref")?;
+        file.write_all(b"\n").context(&tmp, "write temp ref")?;
+        file.sync_all().context(&tmp, "fsync temp ref")?;
+        fs::rename(&tmp, &target).context(&target, "commit ref update")?;
+        Ok(())
+    }
+
     /// Switch HEAD to a branch (write symref `ref: refs/heads/<branch>`).
     /// Appends a reflog entry to `logs/HEAD` with `message`.
     pub fn set_head_symref(&self, branch: &str, message: &str) -> Result<()> {
@@ -382,6 +419,32 @@ impl Refs {
         f.sync_all().context(&tmp, "fsync temp head")?;
         fs::rename(&tmp, &target).context(&target, "commit head")?;
         self.append_reflog("HEAD", &old_sha, &old_sha, message)?;
+        Ok(())
+    }
+
+    /// Detach HEAD at a raw sha (write `<sha>\n` straight into the HEAD
+    /// file, no symref resolution). Appends a `logs/HEAD` entry with
+    /// `message`. Used by detached checkout and rebase's replay loop, where
+    /// HEAD must NOT move the branch ref.
+    pub fn set_head_sha(&self, sha: &str, message: &str) -> Result<()> {
+        let old_sha = self.resolve("HEAD")?.unwrap_or(ZERO_SHA.to_string());
+        let new_sha = sha.to_ascii_lowercase();
+        if !is_sha(&new_sha) {
+            return Err(GitError::Fatal(format!(
+                "trying to write ref 'HEAD' with nonexistent object {new_sha}"
+            )));
+        }
+        let target = self.git_dir.join("HEAD");
+        let dir = target.parent().unwrap();
+        let tmp = dir.join(format!(".tmp-head-{}", std::process::id()));
+        fs::create_dir_all(dir).context(dir, "create head dir")?;
+        let mut f = fs::File::create(&tmp).context(&tmp, "create temp head")?;
+        f.write_all(new_sha.as_bytes())
+            .context(&tmp, "write temp head")?;
+        f.write_all(b"\n").context(&tmp, "write temp head")?;
+        f.sync_all().context(&tmp, "fsync temp head")?;
+        fs::rename(&tmp, &target).context(&target, "commit head")?;
+        self.append_reflog("HEAD", &old_sha, &new_sha, message)?;
         Ok(())
     }
 

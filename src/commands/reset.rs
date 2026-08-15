@@ -81,28 +81,17 @@ pub fn run_reset(args: &[String]) -> Result<()> {
             }
         }
         ResetMode::Hard => {
-            // Move HEAD + index + worktree (--hard also discards local edits);
-            // files first, index last so stat fields match the final bytes.
+            // Move HEAD + index + worktree (--hard also discards local edits).
             let sha_hex = hex(&target_sha);
             refs.update("HEAD", &sha_hex, &format!("reset: moving to {target_rev}"))?;
-            crate::worktree::force_sync_worktree(&store, &root, old_tree.as_deref(), &target_tree)?;
-            // Git's hard reset also deletes files tracked in the current
-            // index but absent from the target tree (e.g. a merge's staged
-            // additions, or a staged new file).
-            let target_entries = tree_entries(&store, &target_tree)?;
-            let target: Vec<&[u8]> = target_entries
-                .iter()
-                .map(|(p, _, _)| p.as_slice())
-                .collect();
-            for e in idx.entries().iter().filter(|e| e.stage() == 0) {
-                if !target.contains(&e.path.as_slice()) {
-                    crate::worktree::remove_file_and_empty_dirs(
-                        &root.join(crate::worktree::rel_os_path(&e.path)),
-                    );
-                }
-            }
-            rewrite_index(&store, &root, &mut idx, &target_tree)?;
-            idx.write(&ipath)?;
+            hard_sync(
+                &store,
+                &root,
+                &mut idx,
+                &ipath,
+                old_tree.as_deref(),
+                &target_tree,
+            )?;
 
             // HEAD is now at <sha> <subject> (stdout)
             if !quiet {
@@ -129,6 +118,37 @@ fn get_commit_tree(store: &ObjectStore, sha: [u8; 20]) -> Result<String> {
     }
     let commit = Commit::parse(&content)?;
     Ok(hex(&commit.tree))
+}
+
+/// Hard-reset the worktree and index to `new_tree` (shared by `reset
+/// --hard` and rebase's start/abort): files first, index last so stat
+/// fields match the final bytes; files tracked in the current index but
+/// absent from the target tree are deleted (a merge's staged additions,
+/// a staged new file).
+pub(crate) fn hard_sync(
+    store: &ObjectStore,
+    root: &Path,
+    idx: &mut Index,
+    ipath: &Path,
+    old_tree: Option<&str>,
+    new_tree: &str,
+) -> Result<()> {
+    crate::worktree::force_sync_worktree(store, root, old_tree, new_tree)?;
+    let target_entries = tree_entries(store, new_tree)?;
+    let target: Vec<&[u8]> = target_entries
+        .iter()
+        .map(|(p, _, _)| p.as_slice())
+        .collect();
+    for e in idx.entries().iter().filter(|e| e.stage() == 0) {
+        if !target.contains(&e.path.as_slice()) {
+            crate::worktree::remove_file_and_empty_dirs(
+                &root.join(crate::worktree::rel_os_path(&e.path)),
+            );
+        }
+    }
+    rewrite_index(store, root, idx, new_tree)?;
+    idx.write(ipath)?;
+    Ok(())
 }
 
 fn rewrite_index(store: &ObjectStore, root: &Path, idx: &mut Index, tree: &str) -> Result<()> {

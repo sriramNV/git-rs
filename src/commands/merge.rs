@@ -19,7 +19,7 @@ use crate::commands::commit::{commit_identities, tree_from_index, write_commit};
 use crate::commands::reset::run_reset;
 use crate::error::{GitError, IoContext, Result};
 use crate::index::{Index, IndexEntry};
-use crate::merge::{Conflict, ConflictKind, MergeFile, merge_trees};
+use crate::merge::{Conflict, ConflictKind, MergeFile, MergeResult, merge_trees};
 use crate::object::Commit;
 use crate::refs::Refs;
 use crate::revwalk::{hex, merge_base, object_name_error, resolve_rev, unborn_fatal};
@@ -133,61 +133,7 @@ fn do_merge(target: &str, quiet: bool) -> Result<()> {
 
     let old = tree_entries(&store, &head_tree)?;
     let merged = merge_trees(&store, &base_tree, &head_tree, &target_tree)?;
-    // The merged index keeps the untouched entries (a file unchanged on both
-    // sides stays), with every touched path replaced by its merged/staged
-    // form. Path order matches git's sorted index at the end.
-    let mut new_idx = Index::new();
-    for e in idx.entries() {
-        if e.stage() == 0 {
-            new_idx.stage(e.clone());
-        }
-    }
-    let mut conflicted = false;
-
-    // Worktree first (files before index, so stat fields match), then
-    // collect the merged index. Path order = git's processing order.
-    for f in &merged.files {
-        match f {
-            MergeFile::Resolved {
-                path, mode, oid, ..
-            } => {
-                new_idx.unstage(path);
-                match oid {
-                    Some(o) => {
-                        let in_old = old
-                            .iter()
-                            .any(|(p, m, ob)| p == path && m == mode && ob == o);
-                        if !in_old {
-                            crate::worktree::write_blob(&store, &root, path, *mode, o)?;
-                        }
-                        let st = stat_file_or_zero(&root.join(rel_os_path(path)));
-                        new_idx.stage(entry(&st, *mode, *o, 0, path));
-                    }
-                    None => {
-                        crate::worktree::remove_file_and_empty_dirs(&root.join(rel_os_path(path)));
-                    }
-                }
-            }
-            MergeFile::Conflict(c) => {
-                conflicted = true;
-                new_idx.unstage(&c.path);
-                if c.kind != ConflictKind::ModifyDelete {
-                    write_marker(&store, &root, c, &label)?;
-                } else if c.ours.is_none() {
-                    // We deleted it; git leaves the modified side's version
-                    // in the tree.
-                    let (mode, oid) = c.theirs.unwrap();
-                    crate::worktree::write_blob(&store, &root, &c.path, mode, &oid)?;
-                }
-                for (stage, side) in [(1u16, &c.base), (2, &c.ours), (3, &c.theirs)] {
-                    if let Some((mode, oid)) = side {
-                        new_idx.stage(entry(&zero_stat(), *mode, *oid, stage, &c.path));
-                    }
-                }
-            }
-        }
-    }
-    new_idx.entries_mut().sort_by(|a, b| a.path.cmp(&b.path));
+    let (new_idx, conflicted) = apply_merged_files(&store, &root, &idx, &old, &merged, &label)?;
 
     write_state_file(&git_dir, "ORIG_HEAD", &format!("{}\n", hex(&head_oid)))?;
     write_state_file(&git_dir, "MERGE_HEAD", &format!("{}\n", hex(&target_sha)))?;
@@ -198,46 +144,9 @@ fn do_merge(target: &str, quiet: bool) -> Result<()> {
     )?;
     new_idx.write(&ipath)?;
 
-    // Output, in path order.
-    for f in &merged.files {
-        match f {
-            MergeFile::Resolved {
-                path, auto: true, ..
-            } => {
-                if !quiet {
-                    println!("Auto-merging {}", display(path));
-                }
-            }
-            MergeFile::Conflict(c) => match c.kind {
-                ConflictKind::Content | ConflictKind::AddAdd => {
-                    if !quiet {
-                        println!("Auto-merging {}", display(&c.path));
-                        println!(
-                            "CONFLICT ({}): Merge conflict in {}",
-                            conflict_word(c.kind),
-                            display(&c.path)
-                        );
-                    }
-                }
-                ConflictKind::ModifyDelete => {
-                    let (deleted, modified) = if c.ours.is_some() {
-                        (label.as_str(), "HEAD")
-                    } else {
-                        ("HEAD", label.as_str())
-                    };
-                    if !quiet {
-                        println!(
-                            "CONFLICT (modify/delete): {} deleted in {deleted} and modified in \
-                             {modified}.  Version {modified} of {} left in tree.",
-                            display(&c.path),
-                            display(&c.path)
-                        );
-                    }
-                }
-            },
-            MergeFile::Resolved { .. } => {}
-        }
-    }
+    // Output, in path order. Shared by `merge` and `rebase` (rebase never
+    // suppresses it).
+    print_merged_lines(&merged.files, &label, quiet);
 
     if !conflicted {
         let tree = tree_from_index(&store, new_idx.entries())?;
@@ -267,6 +176,72 @@ fn do_merge(target: &str, quiet: bool) -> Result<()> {
         // rc 1; everything else already printed.
         Err(GitError::Invalid(String::new()))
     }
+}
+
+/// Apply a merge result to the worktree and index (shared by `merge` and
+/// `rebase`): write resolved files and conflict markers FIRST so stat
+/// fields match the final bytes, then build the merged index — untouched
+/// stage-0 entries kept, every touched path unstaged and re-staged,
+/// conflict paths at stages 1/2/3 with zero stat, sorted by path (git's
+/// index order).
+pub(crate) fn apply_merged_files(
+    store: &ObjectStore,
+    root: &Path,
+    idx: &Index,
+    old: &[(Vec<u8>, u32, [u8; 20])],
+    merged: &MergeResult,
+    label: &str,
+) -> Result<(Index, bool)> {
+    let mut new_idx = Index::new();
+    for e in idx.entries() {
+        if e.stage() == 0 {
+            new_idx.stage(e.clone());
+        }
+    }
+    let mut conflicted = false;
+    for f in &merged.files {
+        match f {
+            MergeFile::Resolved {
+                path, mode, oid, ..
+            } => {
+                new_idx.unstage(path);
+                match oid {
+                    Some(o) => {
+                        let in_old = old
+                            .iter()
+                            .any(|(p, m, ob)| p == path && m == mode && ob == o);
+                        if !in_old {
+                            crate::worktree::write_blob(store, root, path, *mode, o)?;
+                        }
+                        let st = stat_file_or_zero(&root.join(rel_os_path(path)));
+                        new_idx.stage(entry(&st, *mode, *o, 0, path));
+                    }
+                    None => {
+                        crate::worktree::remove_file_and_empty_dirs(&root.join(rel_os_path(path)));
+                    }
+                }
+            }
+            MergeFile::Conflict(c) => {
+                conflicted = true;
+                new_idx.unstage(&c.path);
+                if c.kind != ConflictKind::ModifyDelete {
+                    write_marker(store, root, c, label)?;
+                } else if c.ours.is_none() {
+                    // We deleted it; git leaves the modified side's version
+                    // in the tree.
+                    let (mode, oid) = c.theirs.unwrap();
+                    crate::worktree::write_blob(store, root, &c.path, mode, &oid)?;
+                }
+                for (stage, side) in [(1u16, &c.base), (2, &c.ours), (3, &c.theirs)] {
+                    if let Some((mode, oid)) = side {
+                        new_idx.stage(entry(&zero_stat(), *mode, *oid, stage, &c.path));
+                    }
+                }
+            }
+        }
+    }
+    new_idx.entries_mut().sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((new_idx, conflicted))
 }
 
 /// `git-rs merge --abort`: restore ORIG_HEAD (hard) and drop merge state.
@@ -429,6 +404,47 @@ fn get_commit_tree(store: &ObjectStore, sha: [u8; 20]) -> Result<String> {
     }
     let commit = Commit::parse(&content)?;
     Ok(hex(&commit.tree))
+}
+
+/// The merge's stdout lines (`Auto-merging`, `CONFLICT (...)`) in path
+/// order. Shared by `merge` (quiet suppresses) and `rebase` (never quiet).
+pub(crate) fn print_merged_lines(files: &[MergeFile], label: &str, quiet: bool) {
+    if quiet {
+        return;
+    }
+    for f in files {
+        match f {
+            MergeFile::Resolved {
+                path, auto: true, ..
+            } => {
+                println!("Auto-merging {}", display(path));
+            }
+            MergeFile::Conflict(c) => match c.kind {
+                ConflictKind::Content | ConflictKind::AddAdd => {
+                    println!("Auto-merging {}", display(&c.path));
+                    println!(
+                        "CONFLICT ({}): Merge conflict in {}",
+                        conflict_word(c.kind),
+                        display(&c.path)
+                    );
+                }
+                ConflictKind::ModifyDelete => {
+                    let (deleted, modified) = if c.ours.is_some() {
+                        (label, "HEAD")
+                    } else {
+                        ("HEAD", label)
+                    };
+                    println!(
+                        "CONFLICT (modify/delete): {} deleted in {deleted} and modified in \
+                         {modified}.  Version {modified} of {} left in tree.",
+                        display(&c.path),
+                        display(&c.path)
+                    );
+                }
+            },
+            MergeFile::Resolved { .. } => {}
+        }
+    }
 }
 
 fn conflict_word(kind: ConflictKind) -> &'static str {

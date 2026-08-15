@@ -193,12 +193,17 @@ pub fn run_commit(args: &[String]) -> Result<()> {
 fn merge_msg_message(git_dir: &Path) -> Result<String> {
     let path = git_dir.join("MERGE_MSG");
     let raw = fs::read_to_string(&path).context(&path, "read MERGE_MSG")?;
-    let msg = raw
-        .lines()
+    Ok(clean_message(&[strip_comment_lines(&raw)]))
+}
+
+/// Drop `#` comment lines from a message body (git strips them from
+/// MERGE_MSG and rebase's message file on commit; probed: the comment
+/// lines and the blank line they left go away, the body survives).
+pub(crate) fn strip_comment_lines(raw: &str) -> String {
+    raw.lines()
         .filter(|l| !l.starts_with('#'))
         .collect::<Vec<_>>()
-        .join("\n");
-    Ok(clean_message(&[msg]))
+        .join("\n")
 }
 
 fn remove_merge_state(git_dir: &Path) {

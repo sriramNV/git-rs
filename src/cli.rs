@@ -11,6 +11,7 @@ use crate::commands::diff::run_diff;
 use crate::commands::hash_object::{run_cat_file, run_hash_object, run_update_ref};
 use crate::commands::log::run_log;
 use crate::commands::merge::{run_merge, run_merge_base};
+use crate::commands::rebase::run_rebase;
 use crate::commands::reset::run_reset;
 use crate::commands::show::run_show;
 use crate::commands::status::run_status;
@@ -126,6 +127,12 @@ pub static COMMANDS: &[Command] = &[
         usage: "git-rs merge-base <rev1> <rev2>",
         help: "find the common ancestor of two revisions",
         run: run_merge_base,
+    },
+    Command {
+        name: "rebase",
+        usage: "git-rs rebase <upstream> | --continue | --abort | --skip",
+        help: "replay commits onto another branch",
+        run: run_rebase,
     },
 ];
 
