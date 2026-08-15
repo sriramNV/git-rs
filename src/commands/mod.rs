@@ -12,5 +12,6 @@ pub mod merge;
 pub mod rebase;
 pub mod reset;
 pub mod show;
+pub mod stash;
 pub mod status;
 pub mod tag;

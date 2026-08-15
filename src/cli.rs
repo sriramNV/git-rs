@@ -13,6 +13,7 @@ use crate::commands::log::run_log;
 use crate::commands::merge::{run_merge, run_merge_base};
 use crate::commands::rebase::run_rebase;
 use crate::commands::reset::run_reset;
+use crate::commands::stash::run_stash;
 use crate::commands::show::run_show;
 use crate::commands::status::run_status;
 use crate::commands::tag::run_tag;
@@ -133,6 +134,12 @@ pub static COMMANDS: &[Command] = &[
         usage: "git-rs rebase <upstream> | --continue | --abort | --skip",
         help: "replay commits onto another branch",
         run: run_rebase,
+    },
+    Command {
+        name: "stash",
+        usage: "git-rs stash [list|pop|drop] [<stash>]",
+        help: "stash the changes in a dirty working directory",
+        run: run_stash,
     },
 ];
 
